@@ -35,6 +35,11 @@
 #include "avdtc_api.h"
 #include "internal_include/bt_target.h"
 #include "osi/include/alarm.h"
+#include "btif_a2dp_sharing.h"
+
+// Weak default definitions in case stack is compiled in isolated tests without btif
+__attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
+__attribute__((weak)) bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& /* bd_addr */) { return false; }
 
 using namespace bluetooth;
 
@@ -776,6 +781,10 @@ void avdt_scb_event(AvdtpScb* p_scb, uint8_t event, tAVDT_SCB_EVT* p_data) {
         num_st_streams++;
         ccb_index = i;
         scb_index = j;
+        if (btif_a2dp_sharing_is_active() &&
+            btif_a2dp_sharing_is_sharing_peer(avdtp_cb.ccb[i].peer_addr)) {
+          p_avdt_scb->curr_stream = true;
+        }
       } else {
         p_avdt_scb->curr_stream = false;
       }
@@ -785,9 +794,14 @@ void avdt_scb_event(AvdtpScb* p_scb, uint8_t event, tAVDT_SCB_EVT* p_data) {
   if (num_st_streams == 1) {
     avdtp_cb.ccb[ccb_index].scb[scb_index].curr_stream = true;
   } else if (num_st_streams > 1 && !p_scb->curr_stream && event == AVDT_SCB_API_WRITE_REQ_EVT) {
-    log::error("ignore AVDT_SCB_API_WRITE_REQ_EVT");
-    avdt_scb_free_pkt(p_scb, p_data);
-    return;
+    if (btif_a2dp_sharing_is_active() && p_scb->p_ccb &&
+        btif_a2dp_sharing_is_sharing_peer(p_scb->p_ccb->peer_addr)) {
+      p_scb->curr_stream = true;
+    } else {
+      log::error("ignore AVDT_SCB_API_WRITE_REQ_EVT");
+      avdt_scb_free_pkt(p_scb, p_data);
+      return;
+    }
   }
 
   /* set current event */

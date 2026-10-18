@@ -14,3 +14,7 @@
 # See also https://r8.googlesource.com/r8/+/refs/heads/master/compatibility-faq.md#r8-full-mode.
 -keepclassmembers,allowshrinking,allowoptimization,allowobfuscation,allowaccessmodification class com.android.bluetooth.BluetoothMethodProxy { public <methods>; }
 -keepclassmembers,allowshrinking,allowoptimization,allowobfuscation,allowaccessmodification class com.android.obex.Operation { public <methods>; }
+
+# OPlus A2DP Sharing keep rules
+-keep class com.oplus.bluetooth.** { *; }
+-keepclassmembers class com.oplus.bluetooth.** { *; }

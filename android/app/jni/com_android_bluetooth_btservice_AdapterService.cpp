@@ -2399,6 +2399,11 @@ jint JNI_OnLoad(JavaVM* jvm, void* /* reserved */) {
     return JNI_ERR;
   }
 
+  status = android::register_com_android_bluetooth_a2dp_sharing(e);
+  if (status < 0) {
+    log::warn("jni a2dp sharing registration warning: {}", status);
+  }
+
   status = android::register_com_android_bluetooth_avrcp_target(e);
   if (status < 0) {
     log::error("jni new avrcp target registration failure: {}", status);

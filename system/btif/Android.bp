@@ -57,6 +57,7 @@ cc_library_static {
         "co/bta_pan_co.cc",
         "src/bluetooth.cc",
         "src/btif_a2dp.cc",
+        "src/btif_a2dp_sharing.cc",
         "src/btif_a2dp_sink.cc",
         "src/btif_a2dp_source.cc",
         "src/btif_av.cc",

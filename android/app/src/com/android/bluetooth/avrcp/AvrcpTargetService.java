@@ -358,6 +358,19 @@ public class AvrcpTargetService extends ProfileService {
     }
 
     /**
+     * Send volume update to a specific Bluetooth device (e.g. secondary sharing device).
+     */
+    public void sendVolumeChanged(BluetoothDevice device, int deviceVolume) {
+        if (device == null) {
+            Log.d(TAG, "sendVolumeChanged: null device");
+            return;
+        }
+        if (mVolumeManager != null) {
+            mVolumeManager.sendVolumeChanged(device, deviceVolume);
+        }
+    }
+
+    /**
      * Returns the current song info from the active player in {@link MediaPlayerList}.
      *
      * <p>If a {@link com.android.bluetooth.audio_util.Image} is present in the {@link Metadata},

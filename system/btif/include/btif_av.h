@@ -168,6 +168,12 @@ void btif_av_stream_suspend(void);
 void btif_av_stream_start_offload(void);
 
 /**
+ * Start/stop streaming for secondary audio sharing peer.
+ */
+void btif_av_source_start_sharing_stream(const RawAddress& peer_address);
+void btif_av_source_stop_sharing_stream(const RawAddress& peer_address);
+
+/**
  * Check whether ready to start the A2DP stream.
  * @param local_a2dp_type type of local a2dp profile.
  */

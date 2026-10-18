@@ -152,7 +152,14 @@ android_library {
         "proto/*.proto",
         "src/**/*.java",
         "src/**/*.kt",
+        "src/**/*.aidl",
     ],
+    aidl: {
+        local_include_dirs: ["src"],
+        include_dirs: [
+            "packages/modules/Bluetooth/framework/aidl-export",
+        ],
+    },
     proto: {
         type: "lite",
     },

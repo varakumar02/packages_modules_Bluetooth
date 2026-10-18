@@ -62,6 +62,7 @@
 #include "btif/avrcp/avrcp_service.h"
 #include "btif/include/bluetooth.h"
 #include "btif/include/btif_a2dp.h"
+#include "btif/include/btif_a2dp_sharing.h"
 #include "btif/include/btif_a2dp_source.h"
 #include "btif/include/btif_api.h"
 #include "btif/include/btif_av.h"
@@ -990,6 +991,10 @@ static const void* get_profile_interface(const char* profile_id) {
 
   if (is_profile(profile_id, BT_BQR_ID)) {
     return bluetooth::bqr::getBluetoothQualityReportInterface();
+  }
+
+  if (is_profile(profile_id, BT_PROFILE_A2DP_SHARING_ID)) {
+    return btif_a2dp_sharing_get_interface();
   }
 
   return NULL;

@@ -44,6 +44,7 @@
 #include "bta/include/bta_av_ci.h"
 #include "bta/include/bta_av_co.h"
 #include "btif/include/bta_av_co_peer.h"
+#include "btif/include/btif_a2dp_sharing.h"
 #include "btif/include/btif_a2dp_source.h"
 #include "btif/include/btif_av.h"
 #include "btif/include/btif_av_co.h"
@@ -731,12 +732,14 @@ void BtaAvCo::GetPeerEncoderParameters(const RawAddress& peer_address,
   std::lock_guard<std::recursive_mutex> lock(peer_cache_->codec_lock_);
 
   // Compute the MTU
+  RawAddress sharing_peer = btif_a2dp_sharing_get_sharing_peer();
   for (size_t i = 0; i < BTA_AV_CO_NUM_ELEMENTS(peer_cache_->peers_); i++) {
     const BtaAvCoPeer* p_peer = &peer_cache_->peers_[i];
     if (!p_peer->opened) {
       continue;
     }
-    if (p_peer->addr != peer_address) {
+    if (p_peer->addr != peer_address &&
+        (!btif_a2dp_sharing_is_active() || p_peer->addr != sharing_peer)) {
       continue;
     }
     if (p_peer->mtu < min_mtu) {
