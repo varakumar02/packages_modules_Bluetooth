@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 LunarisOS
- * Reverse-Engineered OPlus A2DP Sharing Implementation for Fluoride Stack
+ * OPlus A2DP Sharing Implementation for Fluoride Stack
  */
 
 #define LOG_TAG "btif_a2dp_sharing"

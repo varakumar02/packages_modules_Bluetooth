@@ -330,6 +330,33 @@ class AvrcpVolumeManager extends AudioDeviceCallback {
         storeVolumeForDevice(device, deviceVolume);
     }
 
+    /**
+     * Informs remote device of a direct AVRCP absolute volume change (0 - 127) and stores it.
+     *
+     * @param avrcpVolume in range (0 - 127).
+     */
+    void sendAbsVolumeChanged(@NonNull BluetoothDevice device, int avrcpVolume) {
+        int clampedAvrcp = Math.max(0, Math.min(AVRCP_MAX_VOL, avrcpVolume));
+        int systemVolume = avrcpToSystemVolume(clampedAvrcp);
+        if (clampedAvrcp == systemToAvrcpVolume(getVolume(device, -1))) {
+            d("sendAbsVolumeChanged: Skipping update volume to same as current.");
+            return;
+        }
+        mVolumeEventLogger.logd(
+                TAG,
+                "sendAbsVolumeChanged:"
+                        + " device="
+                        + device
+                        + " avrcpVolume="
+                        + clampedAvrcp
+                        + " systemVolume="
+                        + systemVolume
+                        + " mDeviceMaxVolume="
+                        + mDeviceMaxVolume);
+        mNativeInterface.sendVolumeChanged(device, clampedAvrcp);
+        storeVolumeForDevice(device, systemVolume);
+    }
+
     /** Returns whether absolute volume is supported by {@code device}. */
     boolean getAbsoluteVolumeSupported(BluetoothDevice device) {
         if (mDeviceMap.containsKey(device)) {

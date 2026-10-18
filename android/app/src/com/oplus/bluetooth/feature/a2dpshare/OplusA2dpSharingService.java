@@ -270,7 +270,7 @@ public class OplusA2dpSharingService extends Service {
                 snapshotCodec(a2dpService, primary);
                 snapshotCodec(a2dpService, device);
 
-                // Apply ColorOS-compliant SBC sharing configuration to both peers
+                // Apply dual-A2DP compatible SBC sharing configuration to both peers
                 boolean primaryApplied = applySharingCodec(a2dpService, primary);
                 boolean secondaryApplied = applySharingCodec(a2dpService, device);
                 if (!primaryApplied || !secondaryApplied) {
@@ -325,6 +325,18 @@ public class OplusA2dpSharingService extends Service {
                     mStarting = false;
                 }
 
+                // Query and broadcast initial secondary volume to UI sliders
+                try {
+                    AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
+                    if (avrcp != null) {
+                        int curVol = avrcp.getRememberedVolumeForDevice(device);
+                        int avrcpVol = (curVol >= 0) ? Math.round((float) curVol * 127.0f / 30.0f) : 100;
+                        notifyVolumeChanged(device, avrcpVol);
+                    }
+                } catch (Throwable t) {
+                    Log.w(TAG, "Failed to broadcast initial secondary volume", t);
+                }
+
                 return true;
             } finally {
                 synchronized (mLock) {
@@ -355,11 +367,11 @@ public class OplusA2dpSharingService extends Service {
                 if (adapterService != null) {
                     AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
                     if (avrcp != null) {
-                        avrcp.sendVolumeChanged(device, clampedVolume);
+                        avrcp.sendAbsVolumeChanged(device, clampedVolume);
                     }
                 }
             } catch (Throwable t) {
-                Log.w(TAG, "Failed to dispatch AVRCP volume to " + device, t);
+                Log.w(TAG, "Failed to dispatch AVRCP absolute volume to " + device, t);
             }
 
             notifyVolumeChanged(device, clampedVolume);
@@ -405,7 +417,27 @@ public class OplusA2dpSharingService extends Service {
         public boolean registerVolumeCallback(IOplusA2dpSharingVolumeCallback callback, AttributionSource attributionSource) {
             enforceBluetoothPrivileged();
             if (callback != null) {
-                return mVolumeCallbacks.register(callback);
+                boolean registered = mVolumeCallbacks.register(callback);
+                if (registered) {
+                    synchronized (mLock) {
+                        if (mInSharingMode && mSecondaryDevice != null) {
+                            try {
+                                AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+                                if (adapterService != null) {
+                                    AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
+                                    if (avrcp != null) {
+                                        int curVol = avrcp.getRememberedVolumeForDevice(mSecondaryDevice);
+                                        int avrcpVol = (curVol >= 0) ? Math.round((float) curVol * 127.0f / 30.0f) : 100;
+                                        callback.onDeviceVolumeChanged(mSecondaryDevice, avrcpVol);
+                                    }
+                                }
+                            } catch (Throwable t) {
+                                Log.w(TAG, "Failed to send initial volume to registered callback", t);
+                            }
+                        }
+                    }
+                }
+                return registered;
             }
             return false;
         }
@@ -551,7 +583,7 @@ public class OplusA2dpSharingService extends Service {
                 a2dpService.setOptionalCodecsEnabled(device, 0);
             }
 
-            // Explicitly configure SBC parameters matching AOSP & ColorOS requirements
+            // Explicitly configure SBC parameters matching dual-A2DP sharing requirements
             BluetoothCodecConfig sbcConfig = new BluetoothCodecConfig.Builder()
                     .setCodecType(BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC)
                     .setCodecPriority(1000000) // Highest priority

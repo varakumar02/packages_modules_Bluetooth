@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 LunarisOS
- * Reverse-Engineered OPlus A2DP Sharing Native Interface
+ * OPlus A2DP Sharing Native Interface for Dual Audio Streaming
  */
 
 package com.oplus.bluetooth.feature.a2dpshare;

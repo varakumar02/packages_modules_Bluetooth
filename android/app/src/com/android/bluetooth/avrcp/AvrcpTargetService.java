@@ -371,6 +371,27 @@ public class AvrcpTargetService extends ProfileService {
     }
 
     /**
+     * Send raw AVRCP absolute volume (0 - 127) directly to a specific Bluetooth device.
+     */
+    public void sendAbsVolumeChanged(BluetoothDevice device, int avrcpVolume) {
+        if (device == null) {
+            Log.d(TAG, "sendAbsVolumeChanged: null device");
+            return;
+        }
+        if (mVolumeManager != null) {
+            mVolumeManager.sendAbsVolumeChanged(device, avrcpVolume);
+        }
+    }
+
+    /**
+     * Returns whether absolute volume is supported by the device.
+     */
+    public boolean getAbsoluteVolumeSupported(BluetoothDevice device) {
+        if (device == null || mVolumeManager == null) return false;
+        return mVolumeManager.getAbsoluteVolumeSupported(device);
+    }
+
+    /**
      * Returns the current song info from the active player in {@link MediaPlayerList}.
      *
      * <p>If a {@link com.android.bluetooth.audio_util.Image} is present in the {@link Metadata},

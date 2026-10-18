@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2026 LunarisOS
- * Reverse-Engineered OPlus A2DP Sharing Interface Definition
+ * OPlus A2DP Sharing Interface Definition
  */
 
 #pragma once
