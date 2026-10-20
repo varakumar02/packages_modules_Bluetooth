@@ -51,6 +51,11 @@
 #include "bta_sys.h"
 #include "btif/avrcp/avrcp_service.h"
 #include "btif/include/btif_av.h"
+#include "btif/include/btif_a2dp_sharing.h"
+
+// Weak default definitions in case stack is compiled in isolated tests without btif
+__attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
+
 #include "btif/include/btif_av_co.h"
 #include "btif/include/btif_config.h"
 #include "btif/include/btif_storage.h"
@@ -2210,7 +2215,8 @@ void bta_av_data_path(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* /* p_data */) {
         list_append(p_scb->a2dp_list, p_buf);
       } else {
         /* just dequeue it from the a2dp_list */
-        if (list_length(p_scb->a2dp_list) < 3) {
+        const size_t max_queued = btif_a2dp_sharing_is_active() ? 14 : 3;
+        if (list_length(p_scb->a2dp_list) < max_queued) {
           /* put it back to the queue */
           list_prepend(p_scb->a2dp_list, p_buf);
         } else {

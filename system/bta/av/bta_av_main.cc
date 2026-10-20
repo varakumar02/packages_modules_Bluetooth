@@ -51,6 +51,11 @@
 #include "bta_av_api.h"
 #include "btif/avrcp/avrcp_service.h"
 #include "btif/include/btif_av.h"
+#include "btif/include/btif_a2dp_sharing.h"
+
+// Weak default definitions in case stack is compiled in isolated tests without btif
+__attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
+
 #include "btif/include/btif_av_co.h"
 #include "btif/include/btif_config.h"
 #include "hardware/bt_av.h"
@@ -1035,7 +1040,12 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
     memcpy(p_new, p_buf, copy_size);
     list_append(p_scbi->a2dp_list, p_new);
 
-    if (list_length(p_scbi->a2dp_list) > p_bta_av_cfg->audio_mqs) {
+    uint16_t max_queue_size = p_bta_av_cfg->audio_mqs;
+    if (btif_a2dp_sharing_is_active()) {
+      max_queue_size = 14;
+    }
+
+    if (list_length(p_scbi->a2dp_list) > max_queue_size) {
       // Drop the oldest packet
       bta_av_co_audio_drop(p_scbi->hndl, p_scbi->PeerAddress());
       BT_HDR* p_buf_drop = static_cast<BT_HDR*>(list_front(p_scbi->a2dp_list));

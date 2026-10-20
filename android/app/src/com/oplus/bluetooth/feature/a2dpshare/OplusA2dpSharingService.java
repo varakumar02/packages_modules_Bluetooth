@@ -17,6 +17,9 @@ import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.IntentFilter;
+import android.media.AudioDeviceAttributes;
+import android.media.AudioDeviceInfo;
+import android.media.AudioManager;
 import android.os.Handler;
 import android.os.IBinder;
 import android.os.Looper;
@@ -65,6 +68,8 @@ public class OplusA2dpSharingService extends Service {
     private boolean mInSharingMode = false;
     private boolean mStarting = false;
     private int mSharingType = 0;
+    private boolean mIsPrimaryAbsTurnedOffAgainstWill = false;
+    private boolean mIsSecondaryAbsTurnedOffAgainstWill = false;
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private Runnable mTeardownFallbackRunnable = null;
@@ -128,14 +133,19 @@ public class OplusA2dpSharingService extends Service {
                     boolean shouldTeardown = false;
                     synchronized (mLock) {
                         if (mInSharingMode || mStarting) {
-                            shouldTeardown = (activeDevice == null || !activeDevice.equals(mPrimaryDevice));
-                            if (shouldTeardown) {
-                                Log.i(TAG, "Active A2DP device switched to " + activeDevice
-                                        + " (primary was " + mPrimaryDevice + "); triggering teardown");
+                            // Do not tear down if activeDevice is null (e.g. playback paused or app switched)
+                            // or if activeDevice is still one of our sharing peers. Only tear down if switched
+                            // to a completely different 3rd party device.
+                            if (activeDevice != null && !activeDevice.equals(mPrimaryDevice) && !activeDevice.equals(mSecondaryDevice)) {
+                                shouldTeardown = true;
+                                Log.i(TAG, "Active A2DP device switched to 3rd party device " + activeDevice
+                                        + " (primary=" + mPrimaryDevice + ", sec=" + mSecondaryDevice + "); triggering teardown");
                             }
                         } else {
-                            mPrimaryDevice = activeDevice;
-                            Log.i(TAG, "Updated prospective primary device to: " + activeDevice);
+                            if (activeDevice != null) {
+                                mPrimaryDevice = activeDevice;
+                                Log.i(TAG, "Updated prospective primary device to: " + activeDevice);
+                            }
                         }
                     }
                     if (shouldTeardown) {
@@ -324,6 +334,12 @@ public class OplusA2dpSharingService extends Service {
                     mInSharingMode = true;
                     mStarting = false;
                 }
+
+                // Dynamic Absolute Volume fallback:
+                // If one device lacks Absolute Volume, force Absolute Volume OFF on the other device
+                // (drops it to DEVICE_VOLUME_BEHAVIOR_VARIABLE software attenuation), preventing
+                // non-AbsVol secondary devices (smartwatches, speakers) from blasting at 100% max volume.
+                handleDynamicAbsVolumeStateChange(primary, device);
 
                 // Query and broadcast initial secondary volume to UI sliders
                 try {
@@ -670,6 +686,9 @@ public class OplusA2dpSharingService extends Service {
             // Restore original optional codecs preference in DatabaseManager
             if (snapshot.optionalCodecsPreference != -1) {
                 a2dpService.setOptionalCodecsEnabled(device, snapshot.optionalCodecsPreference);
+                if (snapshot.optionalCodecsPreference == BluetoothA2dp.OPTIONAL_CODECS_PREF_ENABLED) {
+                    a2dpService.enableOptionalCodecs(device);
+                }
             }
             // Restore exact previous codec config
             if (snapshot.codecConfig != null) {
@@ -695,6 +714,7 @@ public class OplusA2dpSharingService extends Service {
                 restoreDeviceCodec(a2dpService, dev);
             }
         }
+        restoreDynamicAbsVolume(primary, secondary);
         try {
             stopSelf();
         } catch (Exception e) {
@@ -779,12 +799,99 @@ public class OplusA2dpSharingService extends Service {
             }
         }
 
+        restoreDynamicAbsVolume(primary, secondary);
         notifyStateChanged(false, primary, secondary);
 
         try {
             stopSelf();
         } catch (Exception e) {
             Log.d(TAG, "finishTeardown: stopSelf skipped", e);
+        }
+    }
+
+    private void handleDynamicAbsVolumeStateChange(BluetoothDevice primary, BluetoothDevice secondary) {
+        if (primary == null || secondary == null) return;
+        try {
+            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+            if (adapterService == null) return;
+            AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
+            AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+
+            boolean isPrimaryAbs = (avrcp != null) && avrcp.getAbsoluteVolumeSupported(primary);
+            boolean isSecondaryAbs = (avrcp != null) && avrcp.getAbsoluteVolumeSupported(secondary);
+            Log.i(TAG, "handleDynamicAbsVolumeStateChange: primary=" + primary + " (abs=" + isPrimaryAbs
+                    + "), secondary=" + secondary + " (abs=" + isSecondaryAbs + ")");
+
+            if (isPrimaryAbs && !isSecondaryAbs) {
+                Log.i(TAG, "Dynamic AbsVol: secondary lacks AbsVol, forcing primary to DEVICE_VOLUME_BEHAVIOR_VARIABLE");
+                if (avrcp != null) {
+                    avrcp.setAbsoluteVolumeSupported(primary, false);
+                }
+                if (audioManager != null) {
+                    AudioDeviceAttributes primAttr = new AudioDeviceAttributes(
+                            AudioDeviceAttributes.ROLE_OUTPUT,
+                            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                            primary.getAddress());
+                    audioManager.setDeviceVolumeBehavior(primAttr, AudioManager.DEVICE_VOLUME_BEHAVIOR_VARIABLE);
+                }
+                mIsPrimaryAbsTurnedOffAgainstWill = true;
+            } else if (!isPrimaryAbs && isSecondaryAbs) {
+                Log.i(TAG, "Dynamic AbsVol: primary lacks AbsVol, forcing secondary to DEVICE_VOLUME_BEHAVIOR_VARIABLE");
+                if (avrcp != null) {
+                    avrcp.setAbsoluteVolumeSupported(secondary, false);
+                }
+                if (audioManager != null) {
+                    AudioDeviceAttributes secAttr = new AudioDeviceAttributes(
+                            AudioDeviceAttributes.ROLE_OUTPUT,
+                            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                            secondary.getAddress());
+                    audioManager.setDeviceVolumeBehavior(secAttr, AudioManager.DEVICE_VOLUME_BEHAVIOR_VARIABLE);
+                }
+                mIsSecondaryAbsTurnedOffAgainstWill = true;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "handleDynamicAbsVolumeStateChange failed", t);
+        }
+    }
+
+    private void restoreDynamicAbsVolume(BluetoothDevice primary, BluetoothDevice secondary) {
+        try {
+            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+            AvrcpTargetService avrcp = (adapterService != null)
+                    ? (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null)
+                    : null;
+            AudioManager audioManager = (AudioManager) getSystemService(Context.AUDIO_SERVICE);
+
+            if (mIsPrimaryAbsTurnedOffAgainstWill && primary != null) {
+                Log.i(TAG, "Dynamic AbsVol: restoring primary to DEVICE_VOLUME_BEHAVIOR_ABSOLUTE");
+                if (avrcp != null) {
+                    avrcp.setAbsoluteVolumeSupported(primary, true);
+                }
+                if (audioManager != null) {
+                    AudioDeviceAttributes primAttr = new AudioDeviceAttributes(
+                            AudioDeviceAttributes.ROLE_OUTPUT,
+                            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                            primary.getAddress());
+                    audioManager.setDeviceVolumeBehavior(primAttr, AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE);
+                }
+                mIsPrimaryAbsTurnedOffAgainstWill = false;
+            }
+            if (mIsSecondaryAbsTurnedOffAgainstWill && secondary != null) {
+                Log.i(TAG, "Dynamic AbsVol: restoring secondary to DEVICE_VOLUME_BEHAVIOR_ABSOLUTE");
+                if (avrcp != null) {
+                    avrcp.setAbsoluteVolumeSupported(secondary, true);
+                }
+                if (audioManager != null) {
+                    AudioDeviceAttributes secAttr = new AudioDeviceAttributes(
+                            AudioDeviceAttributes.ROLE_OUTPUT,
+                            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                            secondary.getAddress());
+                    audioManager.setDeviceVolumeBehavior(secAttr, AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE);
+                }
+                mIsSecondaryAbsTurnedOffAgainstWill = false;
+            }
+        } catch (Throwable t) {
+            Log.w(TAG, "restoreDynamicAbsVolume failed", t);
         }
     }
 

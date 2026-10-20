@@ -392,6 +392,14 @@ public class AvrcpTargetService extends ProfileService {
     }
 
     /**
+     * Explicitly set whether absolute volume is supported by the device.
+     */
+    public void setAbsoluteVolumeSupported(BluetoothDevice device, boolean supported) {
+        if (device == null || mVolumeManager == null) return;
+        mVolumeManager.setAbsoluteVolumeSupported(device, supported);
+    }
+
+    /**
      * Returns the current song info from the active player in {@link MediaPlayerList}.
      *
      * <p>If a {@link com.android.bluetooth.audio_util.Image} is present in the {@link Metadata},

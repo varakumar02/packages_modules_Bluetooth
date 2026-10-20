@@ -338,10 +338,6 @@ class AvrcpVolumeManager extends AudioDeviceCallback {
     void sendAbsVolumeChanged(@NonNull BluetoothDevice device, int avrcpVolume) {
         int clampedAvrcp = Math.max(0, Math.min(AVRCP_MAX_VOL, avrcpVolume));
         int systemVolume = avrcpToSystemVolume(clampedAvrcp);
-        if (clampedAvrcp == systemToAvrcpVolume(getVolume(device, -1))) {
-            d("sendAbsVolumeChanged: Skipping update volume to same as current.");
-            return;
-        }
         mVolumeEventLogger.logd(
                 TAG,
                 "sendAbsVolumeChanged:"
@@ -363,6 +359,32 @@ class AvrcpVolumeManager extends AudioDeviceCallback {
             return mDeviceMap.get(device);
         }
         return false;
+    }
+
+    /** Explicitly override absolute volume support for {@code device}. */
+    synchronized void setAbsoluteVolumeSupported(@NonNull BluetoothDevice device, boolean supported) {
+        d("setAbsoluteVolumeSupported: device=" + device + " supported=" + supported);
+        mDeviceMap.put(device, supported);
+        final AudioDeviceAttributes deviceAttributes =
+                new AudioDeviceAttributes(
+                        AudioDeviceAttributes.ROLE_OUTPUT,
+                        AudioDeviceInfo.TYPE_BLUETOOTH_A2DP,
+                        device.getAddress());
+        final int deviceVolumeBehavior =
+                supported
+                        ? AudioManager.DEVICE_VOLUME_BEHAVIOR_ABSOLUTE
+                        : AudioManager.DEVICE_VOLUME_BEHAVIOR_VARIABLE;
+        CompletableFuture.runAsync(
+                () -> mAudioManager.setDeviceVolumeBehavior(deviceAttributes, deviceVolumeBehavior),
+                Utils.BackgroundExecutor)
+                .exceptionally(
+                        e -> {
+                            Log.e(TAG, "setAbsoluteVolumeSupported setDeviceVolumeBehavior failed", e);
+                            return null;
+                        });
+        if (device.equals(mCurrentDevice)) {
+            switchVolumeDevice(device);
+        }
     }
 
     /**
