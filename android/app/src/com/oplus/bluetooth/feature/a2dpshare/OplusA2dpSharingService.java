@@ -25,6 +25,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
+import android.provider.Settings;
 import android.util.Log;
 
 import com.android.bluetooth.a2dp.A2dpService;
@@ -67,6 +68,7 @@ public class OplusA2dpSharingService extends Service {
     private BluetoothDevice mSecondaryDevice;
     private boolean mInSharingMode = false;
     private boolean mStarting = false;
+    private boolean mMasterSwitchEnabled = false;
     private int mSharingType = 0;
     private boolean mIsPrimaryAbsTurnedOffAgainstWill = false;
     private boolean mIsSecondaryAbsTurnedOffAgainstWill = false;
@@ -114,7 +116,22 @@ public class OplusA2dpSharingService extends Service {
                 case BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
                     BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED);
-                    if (state == BluetoothProfile.STATE_DISCONNECTED && device != null) {
+                    if (state == BluetoothProfile.STATE_CONNECTED && device != null) {
+                        boolean masterOn;
+                        synchronized (mLock) {
+                            masterOn = mMasterSwitchEnabled;
+                        }
+                        if (masterOn) {
+                            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+                            if (adapterService != null) {
+                                A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
+                                if (a2dpService != null) {
+                                    snapshotCodec(a2dpService, device);
+                                    applySharingCodec(a2dpService, device);
+                                }
+                            }
+                        }
+                    } else if (state == BluetoothProfile.STATE_DISCONNECTED && device != null) {
                         boolean shouldTeardown;
                         synchronized (mLock) {
                             shouldTeardown = (mInSharingMode || mStarting)
@@ -125,6 +142,8 @@ public class OplusA2dpSharingService extends Service {
                         }
                         if (shouldTeardown) {
                             teardown("peer_disconnected", true);
+                        } else {
+                            mCodecSnapshots.remove(device);
                         }
                     }
                 }
@@ -145,6 +164,20 @@ public class OplusA2dpSharingService extends Service {
                             if (activeDevice != null) {
                                 mPrimaryDevice = activeDevice;
                                 Log.i(TAG, "Updated prospective primary device to: " + activeDevice);
+                                boolean masterOn;
+                                synchronized (mLock) {
+                                    masterOn = mMasterSwitchEnabled;
+                                }
+                                if (masterOn) {
+                                    AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+                                    if (adapterService != null) {
+                                        A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
+                                        if (a2dpService != null) {
+                                            snapshotCodec(a2dpService, activeDevice);
+                                            applySharingCodec(a2dpService, activeDevice);
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
@@ -161,7 +194,51 @@ public class OplusA2dpSharingService extends Service {
         @Override
         public boolean isA2dpSharingEnabled(AttributionSource attributionSource) {
             enforceBluetoothPrivileged();
-            return isFeaturePropertyEnabled();
+            synchronized (mLock) {
+                return mMasterSwitchEnabled;
+            }
+        }
+
+        @Override
+        public boolean setA2dpSharingEnabled(boolean enabled, AttributionSource attributionSource) {
+            enforceBluetoothPrivileged();
+            Log.i(TAG, "setA2dpSharingEnabled: " + enabled);
+            synchronized (mLock) {
+                mMasterSwitchEnabled = enabled;
+            }
+            try {
+                Settings.System.putInt(getContentResolver(), "oplus_bluetooth_a2dp_share", enabled ? 1 : 0);
+            } catch (Throwable th) {
+                Log.w(TAG, "Failed to persist oplus_bluetooth_a2dp_share setting", th);
+            }
+            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+            if (adapterService == null) return true;
+            A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
+            if (a2dpService == null) return true;
+
+            if (enabled) {
+                List<BluetoothDevice> connectedDevices = a2dpService.getConnectedDevices();
+                if (connectedDevices != null) {
+                    for (BluetoothDevice dev : connectedDevices) {
+                        snapshotCodec(a2dpService, dev);
+                        applySharingCodec(a2dpService, dev);
+                    }
+                }
+            } else {
+                boolean inSharing;
+                synchronized (mLock) {
+                    inSharing = mInSharingMode || mStarting;
+                }
+                if (inSharing) {
+                    teardown("master_switch_disabled", true);
+                } else {
+                    for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
+                        restoreDeviceCodec(a2dpService, dev);
+                        mCodecSnapshots.remove(dev);
+                    }
+                }
+            }
+            return true;
         }
 
         @Override
@@ -471,6 +548,11 @@ public class OplusA2dpSharingService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
+        try {
+            mMasterSwitchEnabled = Settings.System.getInt(getContentResolver(), "oplus_bluetooth_a2dp_share", 0) != 0;
+        } catch (Throwable unused) {
+            mMasterSwitchEnabled = false;
+        }
         try {
             mNativeInterface = OplusA2dpSharingNativeInterface.getInstance();
             ensureNativeInitialized();
@@ -786,15 +868,30 @@ public class OplusA2dpSharingService extends Service {
         if (adapterService != null) {
             A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
             if (a2dpService != null) {
-                // Restore secondary device codec immediately.
-                // Do NOT restore primary device codec while it is actively playing,
-                // as that forces a codec renegotiation and restarts the A2DP stream.
-                if (secondary != null) restoreDeviceCodec(a2dpService, secondary);
-                for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
-                    if (primary != null && dev.equals(primary)) {
-                        continue;
+                if (secondary != null) {
+                    restoreDeviceCodec(a2dpService, secondary);
+                    mCodecSnapshots.remove(secondary);
+                }
+                boolean masterOn;
+                synchronized (mLock) {
+                    masterOn = mMasterSwitchEnabled;
+                }
+                if (!masterOn) {
+                    if (primary != null) {
+                        restoreDeviceCodec(a2dpService, primary);
+                        mCodecSnapshots.remove(primary);
                     }
-                    restoreDeviceCodec(a2dpService, dev);
+                    for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
+                        restoreDeviceCodec(a2dpService, dev);
+                        mCodecSnapshots.remove(dev);
+                    }
+                } else {
+                    for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
+                        if (primary == null || !dev.equals(primary)) {
+                            restoreDeviceCodec(a2dpService, dev);
+                            mCodecSnapshots.remove(dev);
+                        }
+                    }
                 }
             }
         }

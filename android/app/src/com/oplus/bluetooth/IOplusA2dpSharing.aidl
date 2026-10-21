@@ -12,6 +12,7 @@ import java.util.List;
 
 interface IOplusA2dpSharing {
     boolean isA2dpSharingEnabled(in AttributionSource attributionSource);
+    boolean setA2dpSharingEnabled(boolean enabled, in AttributionSource attributionSource);
     boolean isA2dpSharingAvailable(in AttributionSource attributionSource);
     boolean inSharingMode(in AttributionSource attributionSource);
     int getSharingType(in AttributionSource attributionSource);
