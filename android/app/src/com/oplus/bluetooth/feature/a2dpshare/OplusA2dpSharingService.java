@@ -682,8 +682,7 @@ public class OplusA2dpSharingService extends Service {
                 if (cur.getCodecType() == BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC
                         && cur.getSampleRate() == BluetoothCodecConfig.SAMPLE_RATE_44100
                         && cur.getBitsPerSample() == BluetoothCodecConfig.BITS_PER_SAMPLE_16
-                        && cur.getChannelMode() == BluetoothCodecConfig.CHANNEL_MODE_STEREO
-                        && cur.getCodecSpecific2() == SBC_SHARING_CODEC_SPECIFIC_2) {
+                        && cur.getChannelMode() == BluetoothCodecConfig.CHANNEL_MODE_STEREO) {
                     Log.i(TAG, "applySharingCodec: " + device + " already configured with SBC sharing codec, skipping re-negotiation");
                     return true;
                 }
