@@ -675,6 +675,20 @@ public class OplusA2dpSharingService extends Service {
 
     private boolean applySharingCodec(A2dpService a2dpService, BluetoothDevice device) {
         try {
+            // Check if device is already configured with SBC sharing parameters to avoid redundant re-negotiation
+            BluetoothCodecStatus status = a2dpService.getCodecStatus(device);
+            if (status != null && status.getCodecConfig() != null) {
+                BluetoothCodecConfig cur = status.getCodecConfig();
+                if (cur.getCodecType() == BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC
+                        && cur.getSampleRate() == BluetoothCodecConfig.SAMPLE_RATE_44100
+                        && cur.getBitsPerSample() == BluetoothCodecConfig.BITS_PER_SAMPLE_16
+                        && cur.getChannelMode() == BluetoothCodecConfig.CHANNEL_MODE_STEREO
+                        && cur.getCodecSpecific2() == SBC_SHARING_CODEC_SPECIFIC_2) {
+                    Log.i(TAG, "applySharingCodec: " + device + " already configured with SBC sharing codec, skipping re-negotiation");
+                    return true;
+                }
+            }
+
             // Disable optional codecs if previously enabled (0 = disabled)
             DeviceCodecSnapshot snapshot = mCodecSnapshots.get(device);
             if (snapshot != null && snapshot.optionalCodecsPreference == 1) {
