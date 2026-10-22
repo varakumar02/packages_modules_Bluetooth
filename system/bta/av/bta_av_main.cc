@@ -1042,7 +1042,7 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
 
     uint16_t max_queue_size = p_bta_av_cfg->audio_mqs;
     if (btif_a2dp_sharing_is_active()) {
-      max_queue_size = 14;
+      max_queue_size = 6;
     }
 
     if (list_length(p_scbi->a2dp_list) > max_queue_size) {

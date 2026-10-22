@@ -25,6 +25,7 @@ static std::mutex s_sharing_mutex;
 static RawAddress s_primary_address = RawAddress::kEmpty;
 static RawAddress s_secondary_address = RawAddress::kEmpty;
 static bool s_in_sharing_mode = false;
+static uint32_t s_sharing_generation = 0;
 
 static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_peer);
 
@@ -69,42 +70,47 @@ static void cleanup(void) {
     s_primary_address = RawAddress::kEmpty;
     s_secondary_address = RawAddress::kEmpty;
     s_in_sharing_mode = false;
+    ++s_sharing_generation;
 }
 
 static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
     RawAddress primary = btif_av_source_active_peer();
     log::info("btif_a2dp_sharing_enter_main_thread: primary={}, secondary={}", primary, bd_addr);
 
-    bool offload_was_running = btif_av_is_a2dp_offload_running();
-
     btav_sharing_callbacks_t* callbacks = nullptr;
+    uint32_t generation = 0;
     {
         std::lock_guard<std::mutex> lock(s_sharing_mutex);
+        generation = ++s_sharing_generation;
         s_secondary_address = bd_addr;
         s_in_sharing_mode = true;
         s_primary_address = primary;
         callbacks = s_callbacks;
     }
 
-    if (offload_was_running && !primary.IsEmpty()) {
-        log::info("btif_a2dp_sharing: offload active, restarting source session for software SBC transition");
+    if (!primary.IsEmpty()) {
+        log::info("btif_a2dp_sharing: restarting source session for dual sharing setup (gen={})", generation);
         std::promise<void> promise;
         std::future<void> future = promise.get_future();
         btif_a2dp_source_restart_session(primary, primary, std::move(promise));
 
         // Await the session restart completion signal (promise fulfillment) on a worker thread
         // and then chain secondary stream start back to the BTIF main thread without deadlock.
-        std::thread([future = std::move(future), bd_addr, primary, callbacks]() mutable {
+        std::thread([future = std::move(future), bd_addr, primary, callbacks, generation]() mutable {
             if (future.valid()) {
                 auto status = future.wait_for(std::chrono::milliseconds(1000));
                 if (status == std::future_status::timeout) {
                     log::warn("btif_a2dp_sharing: restart_session future wait timed out after 1000ms");
                 }
             }
-            do_in_main_thread(base::BindOnce([](const RawAddress& secondary, const RawAddress& prim, btav_sharing_callbacks_t* cb) {
-                if (!btif_a2dp_sharing_is_active()) {
-                    log::warn("btif_a2dp_sharing: sharing aborted before secondary stream start");
-                    return;
+            do_in_main_thread(base::BindOnce([](uint32_t gen, const RawAddress& secondary, const RawAddress& prim, btav_sharing_callbacks_t* cb) {
+                {
+                    std::lock_guard<std::mutex> lock(s_sharing_mutex);
+                    if (gen != s_sharing_generation || !s_in_sharing_mode) {
+                        log::warn("btif_a2dp_sharing: stale enter continuation dropped (gen={}, current_gen={})",
+                                  gen, s_sharing_generation);
+                        return;
+                    }
                 }
 
                 // Handle active streaming (kStateStarted)
@@ -119,10 +125,10 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
                 if (cb && cb->on_sharing_state_changed) {
                     do_in_jni_thread(base::BindOnce(cb->on_sharing_state_changed, A2DP_SHARING_STATE_STARTED, prim, secondary));
                 }
-            }, bd_addr, primary, callbacks));
+            }, generation, bd_addr, primary, callbacks));
         }).detach();
     } else {
-        log::info("btif_a2dp_sharing: software encoding already active, starting secondary stream directly for {}", bd_addr);
+        log::info("btif_a2dp_sharing: primary empty, starting secondary stream directly for {}", bd_addr);
         btif_av_source_start_sharing_stream(bd_addr);
 
         if (callbacks && callbacks->on_sharing_state_changed) {
@@ -139,8 +145,16 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
 
     {
         std::lock_guard<std::mutex> lock(s_sharing_mutex);
+        ++s_sharing_generation; // Invalidate any in-flight enter continuation
+        callbacks = s_callbacks;
+
         if (!s_in_sharing_mode && s_secondary_address.IsEmpty()) {
-            log::info("btif_a2dp_sharing_exit_main_thread: already exited, ignoring");
+            log::info("btif_a2dp_sharing_exit_main_thread: already exited, acknowledging STOPPED");
+            if (callbacks && callbacks->on_sharing_state_changed) {
+                do_in_jni_thread(base::BindOnce(callbacks->on_sharing_state_changed,
+                                                 A2DP_SHARING_STATE_STOPPED,
+                                                 RawAddress::kEmpty, RawAddress::kEmpty));
+            }
             return;
         }
         s_in_sharing_mode = false;
@@ -148,7 +162,6 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
         primary = s_primary_address;
         s_secondary_address = RawAddress::kEmpty;
         s_primary_address = RawAddress::kEmpty;
-        callbacks = s_callbacks;
     }
 
     if (!old_secondary.IsEmpty() && old_secondary != disconnected_peer) {
@@ -156,12 +169,14 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
         btif_av_source_stop_sharing_stream(old_secondary);
     }
 
-    // Do NOT restart source session for current_active!
-    // Restarting session mid-playback destroys the Audio HAL stream and freezes playback.
-    // The active device continues streaming SBC uninterrupted without needing a session reset.
+    // Upshift: Restart source session for surviving active device to restore Hardware Offload or uncap SBC bitpool
     RawAddress current_active = btif_av_source_active_peer();
-    log::info("btif_a2dp_sharing: exit completed, surviving active device {} maintains continuous playback",
-              current_active);
+    if (!current_active.IsEmpty()) {
+        log::info("btif_a2dp_sharing: restarting session for surviving active device {} to restore full capabilities",
+                  current_active);
+        std::promise<void> promise;
+        btif_a2dp_source_restart_session(current_active, current_active, std::move(promise));
+    }
 
     // Invoke state callback on JNI thread without holding s_sharing_mutex
     if (callbacks && callbacks->on_sharing_state_changed) {

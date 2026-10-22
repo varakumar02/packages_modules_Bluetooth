@@ -40,6 +40,8 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 @SuppressWarnings("AndroidFrameworkRequiresPermission")
 public class OplusA2dpSharingService extends Service {
@@ -57,6 +59,7 @@ public class OplusA2dpSharingService extends Service {
     public static final int SHARING_TYPE_PROVISIONAL = 2;
 
     private static final long SBC_SHARING_CODEC_SPECIFIC_2 = 22L;
+    private static final ExecutorService sAsyncExecutor = Executors.newSingleThreadExecutor();
 
     private final RemoteCallbackList<IOplusA2dpSharingStateCallback> mStateCallbacks =
             new RemoteCallbackList<>();
@@ -307,137 +310,138 @@ public class OplusA2dpSharingService extends Service {
                 mStarting = true;
             }
 
+            if (!ensureNativeInitialized() || mNativeInterface == null) {
+                Log.e(TAG, "startSharing: native interface not available");
+                synchronized (mLock) { mStarting = false; }
+                return false;
+            }
+
+            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+            if (adapterService == null) {
+                Log.e(TAG, "startSharing: AdapterService unavailable");
+                synchronized (mLock) { mStarting = false; }
+                return false;
+            }
+
+            A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
+            if (a2dpService == null) {
+                Log.e(TAG, "startSharing: A2dpService unavailable");
+                synchronized (mLock) { mStarting = false; }
+                return false;
+            }
+
+            if (a2dpService.getConnectionState(device) != BluetoothProfile.STATE_CONNECTED) {
+                Log.e(TAG, "startSharing: secondary device A2DP not connected");
+                synchronized (mLock) { mStarting = false; }
+                return false;
+            }
+
+            BluetoothDevice primary = a2dpService.getActiveDevice();
+            if (primary == null || primary.equals(device)) {
+                Log.e(TAG, "startSharing: invalid primary=" + primary + " secondary=" + device);
+                synchronized (mLock) { mStarting = false; }
+                return false;
+            }
+
+            // Bind primary device immediately under lock so active device changes during
+            // setup are accurately compared against this primary instead of a stale/null field
+            synchronized (mLock) {
+                if (!mStarting) {
+                    Log.w(TAG, "startSharing: aborted before setup began");
+                    return false;
+                }
+                mPrimaryDevice = primary;
+            }
+
+            // Promote service to started state so it outlives DeviceSettings process
             try {
-                if (!ensureNativeInitialized() || mNativeInterface == null) {
-                    Log.e(TAG, "startSharing: native interface not available");
-                    return false;
-                }
+                startService(new Intent(OplusA2dpSharingService.this, OplusA2dpSharingService.class));
+            } catch (Exception e) {
+                Log.w(TAG, "Could not startService self for lifetime persistence", e);
+            }
 
-                AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
-                if (adapterService == null) {
-                    Log.e(TAG, "startSharing: AdapterService unavailable");
-                    return false;
-                }
-
-                A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
-                if (a2dpService == null) {
-                    Log.e(TAG, "startSharing: A2dpService unavailable");
-                    return false;
-                }
-
-                if (a2dpService.getConnectionState(device) != BluetoothProfile.STATE_CONNECTED) {
-                    Log.e(TAG, "startSharing: secondary device A2DP not connected");
-                    return false;
-                }
-
-                BluetoothDevice primary = a2dpService.getActiveDevice();
-                if (primary == null || primary.equals(device)) {
-                    Log.e(TAG, "startSharing: invalid primary=" + primary + " secondary=" + device);
-                    return false;
-                }
-
-                // Bind primary device immediately under lock so active device changes during
-                // setup are accurately compared against this primary instead of a stale/null field
-                synchronized (mLock) {
-                    if (!mStarting) {
-                        Log.w(TAG, "startSharing: aborted before setup began");
-                        return false;
-                    }
-                    mPrimaryDevice = primary;
-                }
-
-                // Promote service to started state so it outlives DeviceSettings process
+            // Execute configuration, SBC verification wait, and native enter asynchronously
+            // so the Binder thread is not blocked (eliminates Tile / SystemUI ANR hazard)
+            sAsyncExecutor.execute(() -> {
                 try {
-                    startService(new Intent(OplusA2dpSharingService.this, OplusA2dpSharingService.class));
-                } catch (Exception e) {
-                    Log.w(TAG, "Could not startService self for lifetime persistence", e);
-                }
+                    // Snapshot existing codecs and optional codec preferences before modification
+                    snapshotCodec(a2dpService, primary);
+                    snapshotCodec(a2dpService, device);
 
-                // Snapshot existing codecs and optional codec preferences before modification
-                snapshotCodec(a2dpService, primary);
-                snapshotCodec(a2dpService, device);
-
-                // Apply dual-A2DP compatible SBC sharing configuration to both peers
-                boolean primaryApplied = applySharingCodec(a2dpService, primary);
-                boolean secondaryApplied = applySharingCodec(a2dpService, device);
-                if (!primaryApplied || !secondaryApplied) {
-                    Log.e(TAG, "startSharing: failed to dispatch codec preferences, rolling back");
-                    rollbackSharing(a2dpService, primary, device);
-                    return false;
-                }
-
-                // Synchronously wait for both devices to confirm compatible SBC configuration (up to 1500ms)
-                if (!waitForSbcCodec(a2dpService, primary, device, 1500)) {
-                    Log.e(TAG, "startSharing: codec transition to compatible SBC timed out, rolling back");
-                    rollbackSharing(a2dpService, primary, device);
-                    return false;
-                }
-
-                // Re-check mStarting after 1.5s wait to ensure teardown wasn't requested concurrently
-                synchronized (mLock) {
-                    if (!mStarting) {
-                        Log.w(TAG, "startSharing: aborted during setup wait (teardown requested)");
+                    // Apply dual-A2DP compatible SBC sharing configuration to both peers
+                    boolean primaryApplied = applySharingCodec(a2dpService, primary);
+                    boolean secondaryApplied = applySharingCodec(a2dpService, device);
+                    if (!primaryApplied || !secondaryApplied) {
+                        Log.e(TAG, "startSharing: failed to dispatch codec preferences, rolling back");
                         rollbackSharing(a2dpService, primary, device);
-                        return false;
+                        return;
                     }
-                }
 
-                if (mNativeInterface == null) {
-                    Log.e(TAG, "startSharing: mNativeInterface is null");
-                    rollbackSharing(a2dpService, primary, device);
-                    return false;
-                }
-
-                // Trigger Fluoride native sharing stream
-                boolean success = mNativeInterface.enterSharing(device);
-                Log.i(TAG, "Native enterSharing returned: " + success);
-
-                if (!success) {
-                    Log.e(TAG, "Native enterSharing failed, rolling back");
-                    rollbackSharing(a2dpService, primary, device);
-                    return false;
-                }
-
-                // Single atomic check-and-commit under the lock
-                synchronized (mLock) {
-                    if (!mStarting) {
-                        Log.w(TAG, "startSharing: teardown occurred while enterSharing was executing");
+                    // Wait for both devices to confirm compatible SBC configuration (up to 1500ms)
+                    if (!waitForSbcCodec(a2dpService, primary, device, 1500)) {
+                        Log.e(TAG, "startSharing: codec transition to compatible SBC timed out, rolling back");
                         rollbackSharing(a2dpService, primary, device);
-                        return false;
+                        return;
                     }
-                    mPrimaryDevice = primary;
-                    mSecondaryDevice = device;
-                    mSharingType = sharingType;
-                    mInSharingMode = true;
-                    mStarting = false;
-                }
 
-                // Dynamic Absolute Volume fallback:
-                // If one device lacks Absolute Volume, force Absolute Volume OFF on the other device
-                // (drops it to DEVICE_VOLUME_BEHAVIOR_VARIABLE software attenuation), preventing
-                // non-AbsVol secondary devices (smartwatches, speakers) from blasting at 100% max volume.
-                handleDynamicAbsVolumeStateChange(primary, device);
+                    synchronized (mLock) {
+                        if (!mStarting) {
+                            Log.w(TAG, "startSharing: aborted during setup wait (teardown requested)");
+                            rollbackSharing(a2dpService, primary, device);
+                            return;
+                        }
+                    }
 
-                // Query and broadcast initial secondary volume to UI sliders
-                try {
-                    AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
-                    if (avrcp != null) {
-                        int curVol = avrcp.getRememberedVolumeForDevice(device);
-                        int avrcpVol = (curVol >= 0) ? Math.round((float) curVol * 127.0f / 30.0f) : 100;
-                        notifyVolumeChanged(device, avrcpVol);
+                    if (mNativeInterface == null) {
+                        Log.e(TAG, "startSharing: mNativeInterface is null");
+                        rollbackSharing(a2dpService, primary, device);
+                        return;
+                    }
+
+                    // Trigger Fluoride native sharing stream
+                    boolean success = mNativeInterface.enterSharing(device);
+                    Log.i(TAG, "Native enterSharing returned: " + success);
+
+                    if (!success) {
+                        Log.e(TAG, "Native enterSharing failed, rolling back");
+                        rollbackSharing(a2dpService, primary, device);
+                        return;
+                    }
+
+                    // Safety timeout guard: abort if native STARTED callback does not arrive within 3000ms
+                    mHandler.postDelayed(() -> {
+                        synchronized (mLock) {
+                            if (mStarting && !mInSharingMode) {
+                                Log.w(TAG, "startSharing: timeout waiting for native STARTED callback, rolling back");
+                                teardown("native_enter_timeout", true);
+                            }
+                        }
+                    }, 3000);
+
+                    // Dynamic Absolute Volume fallback:
+                    // If one device lacks Absolute Volume, force Absolute Volume OFF on the other device
+                    // (drops it to DEVICE_VOLUME_BEHAVIOR_VARIABLE software attenuation), preventing
+                    // non-AbsVol secondary devices (smartwatches, speakers) from blasting at 100% max volume.
+                    handleDynamicAbsVolumeStateChange(primary, device);
+
+                    // Query and broadcast initial secondary volume to UI sliders
+                    try {
+                        AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
+                        if (avrcp != null) {
+                            int curVol = avrcp.getRememberedVolumeForDevice(device);
+                            int avrcpVol = (curVol >= 0) ? Math.round((float) curVol * 127.0f / 30.0f) : 100;
+                            notifyVolumeChanged(device, avrcpVol);
+                        }
+                    } catch (Throwable t) {
+                        Log.w(TAG, "Failed to broadcast initial secondary volume", t);
                     }
                 } catch (Throwable t) {
-                    Log.w(TAG, "Failed to broadcast initial secondary volume", t);
+                    Log.e(TAG, "startSharing async setup encountered error, rolling back", t);
+                    rollbackSharing(a2dpService, primary, device);
                 }
+            });
 
-                return true;
-            } finally {
-                synchronized (mLock) {
-                    if (!mInSharingMode) {
-                        mStarting = false;
-                    }
-                }
-            }
+            return true;
         }
 
         @Override
@@ -666,14 +670,26 @@ public class OplusA2dpSharingService extends Service {
             int opt = a2dpService.getOptionalCodecsEnabled(device);
             BluetoothCodecStatus status = a2dpService.getCodecStatus(device);
             BluetoothCodecConfig cfg = (status != null) ? status.getCodecConfig() : null;
-            mCodecSnapshots.put(device, new DeviceCodecSnapshot(opt, cfg));
+
+            // Skip snapshotting if current configuration is already our forced SBC sharing config
+            // (prevents recording forced SBC as original if service restarts with master switch ON)
+            if (cfg != null && cfg.getCodecType() == BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC
+                    && cfg.getSampleRate() == BluetoothCodecConfig.SAMPLE_RATE_44100
+                    && cfg.getBitsPerSample() == BluetoothCodecConfig.BITS_PER_SAMPLE_16
+                    && cfg.getChannelMode() == BluetoothCodecConfig.CHANNEL_MODE_STEREO
+                    && cfg.getCodecSpecific2() == SBC_SHARING_CODEC_SPECIFIC_2) {
+                Log.i(TAG, "snapshotCodec for " + device + ": current config is already forced sharing SBC, skipping");
+                return;
+            }
+
+            mCodecSnapshots.putIfAbsent(device, new DeviceCodecSnapshot(opt, cfg));
             Log.i(TAG, "snapshotCodec for " + device + ": opt=" + opt + ", cfg=" + cfg);
         } catch (Exception e) {
             Log.w(TAG, "Failed to snapshot codec for " + device, e);
         }
     }
 
-    private boolean applySharingCodec(A2dpService a2dpService, BluetoothDevice device) {
+    private static boolean applySharingCodec(A2dpService a2dpService, BluetoothDevice device) {
         try {
             // Check if device is already configured with SBC sharing parameters to avoid redundant re-negotiation
             BluetoothCodecStatus status = a2dpService.getCodecStatus(device);
@@ -688,13 +704,9 @@ public class OplusA2dpSharingService extends Service {
                 }
             }
 
-            // Disable optional codecs if previously enabled (0 = disabled)
-            DeviceCodecSnapshot snapshot = mCodecSnapshots.get(device);
-            if (snapshot != null && snapshot.optionalCodecsPreference == 1) {
-                a2dpService.setOptionalCodecsEnabled(device, 0);
-            }
-
-            // Explicitly configure SBC parameters matching dual-A2DP sharing requirements
+            // Explicitly configure SBC parameters matching dual-A2DP sharing requirements.
+            // Using highest priority (1000000) forces SBC for the session without mutating
+            // or corrupting the persistent optional-codecs preference in DatabaseManager.
             BluetoothCodecConfig sbcConfig = new BluetoothCodecConfig.Builder()
                     .setCodecType(BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC)
                     .setCodecPriority(1000000) // Highest priority
@@ -810,6 +822,7 @@ public class OplusA2dpSharingService extends Service {
             }
         }
         restoreDynamicAbsVolume(primary, secondary);
+        notifyStateChanged(false, primary, secondary);
         try {
             stopSelf();
         } catch (Exception e) {
@@ -881,15 +894,15 @@ public class OplusA2dpSharingService extends Service {
         if (adapterService != null) {
             A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
             if (a2dpService != null) {
-                if (secondary != null) {
-                    restoreDeviceCodec(a2dpService, secondary);
-                    mCodecSnapshots.remove(secondary);
-                }
                 boolean masterOn;
                 synchronized (mLock) {
                     masterOn = mMasterSwitchEnabled;
                 }
                 if (!masterOn) {
+                    if (secondary != null) {
+                        restoreDeviceCodec(a2dpService, secondary);
+                        mCodecSnapshots.remove(secondary);
+                    }
                     if (primary != null) {
                         restoreDeviceCodec(a2dpService, primary);
                         mCodecSnapshots.remove(primary);
@@ -899,12 +912,7 @@ public class OplusA2dpSharingService extends Service {
                         mCodecSnapshots.remove(dev);
                     }
                 } else {
-                    for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
-                        if (primary == null || !dev.equals(primary)) {
-                            restoreDeviceCodec(a2dpService, dev);
-                            mCodecSnapshots.remove(dev);
-                        }
-                    }
+                    Log.i(TAG, "finishTeardown: master switch is ON, retaining SBC priming for connected devices");
                 }
             }
         }

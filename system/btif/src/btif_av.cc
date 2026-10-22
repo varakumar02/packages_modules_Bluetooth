@@ -2535,7 +2535,7 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event, void* p_data
 
     // FIXME -- use suspend = true always to work around issue with BTA AV
     case BTIF_AV_STOP_STREAM_REQ_EVT:
-    case BTIF_AV_SUSPEND_STREAM_REQ_EVT:
+    case BTIF_AV_SUSPEND_STREAM_REQ_EVT: {
       log::info("Peer {} : event={} flags={}", peer_.PeerAddress(), BtifAvEvent::EventName(event),
                 peer_.FlagsToString());
 
@@ -2552,8 +2552,11 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event, void* p_data
       // always overrides.
       peer_.ClearFlags(BtifAvPeer::kFlagRemoteSuspend);
 
-      if (peer_.IsSink() && peer_.IsActivePeer()) {
-        // Immediately stop transmission of frames while suspend is pending for active peer
+      bool should_stop_audio = peer_.IsActivePeer() ||
+          (!btif_a2dp_sharing_is_active() &&
+           !btif_av_stream_started_ready(peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource));
+      if (peer_.IsSink() && should_stop_audio) {
+        // Immediately stop transmission of frames while suspend is pending
         if (event == BTIF_AV_STOP_STREAM_REQ_EVT) {
           btif_a2dp_on_stopped(nullptr, peer_.IsSource() ? A2dpType::kSink : A2dpType::kSource);
         } else {
@@ -2565,6 +2568,7 @@ bool BtifAvStateMachine::StateStarted::ProcessEvent(uint32_t event, void* p_data
       }
       BTA_AvStop(peer_.BtaHandle(), true);
       break;
+    }
 
     case BTIF_AV_DISCONNECT_REQ_EVT:
       log::info("Peer {} : event={} flags={}", peer_.PeerAddress(), BtifAvEvent::EventName(event),

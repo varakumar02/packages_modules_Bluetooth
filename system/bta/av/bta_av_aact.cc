@@ -2215,7 +2215,7 @@ void bta_av_data_path(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* /* p_data */) {
         list_append(p_scb->a2dp_list, p_buf);
       } else {
         /* just dequeue it from the a2dp_list */
-        const size_t max_queued = btif_a2dp_sharing_is_active() ? 14 : 3;
+        const size_t max_queued = btif_a2dp_sharing_is_active() ? 6 : 3;
         if (list_length(p_scb->a2dp_list) < max_queued) {
           /* put it back to the queue */
           list_prepend(p_scb->a2dp_list, p_buf);
