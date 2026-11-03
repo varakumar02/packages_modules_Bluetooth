@@ -32,6 +32,7 @@ import android.util.Log;
 import com.android.bluetooth.R;
 import com.android.bluetooth.flags.Flags;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 
@@ -70,8 +71,15 @@ class A2dpCodecConfig {
         mContext = context;
         mA2dpNativeInterface = a2dpNativeInterface;
         mCodecConfigPriorities = assignCodecConfigPriorities();
-        mCodecConfigOffloading =
-                audioManager.getHwOffloadFormatsSupportedForA2dp().toArray(mCodecConfigOffloading);
+        List<BluetoothCodecConfig> offloading =
+                new ArrayList<>(audioManager.getHwOffloadFormatsSupportedForA2dp());
+        // AudioSystem.audioFormatToBluetoothSourceCodec() has no AUDIO_FORMAT_APTX_ADAPTIVE case,
+        // so the framework drops it; the native offload code intersects with the HAL capabilities.
+        offloading.add(
+                new BluetoothCodecConfig.Builder()
+                        .setCodecType(SOURCE_CODEC_TYPE_APTX_ADAPTIVE)
+                        .build());
+        mCodecConfigOffloading = offloading.toArray(mCodecConfigOffloading);
     }
 
     BluetoothCodecConfig[] codecConfigPriorities() {
