@@ -22,10 +22,30 @@
 #include "hal_version_manager.h"
 #include "hardware/bt_av.h"
 #include "hidl/a2dp_encoding_hidl.h"
+#include "osi/include/properties.h"
+#include "qti/a2dp_encoding_qti.h"
 
 namespace bluetooth {
 namespace audio {
 namespace a2dp {
+
+namespace {
+
+// A2DP offload goes through the Qualcomm Bluetooth audio HAL
+// (vendor.qti.hardware.bluetooth_audio@2.1) when it is registered, as on stock Qualcomm builds:
+// its offload shim in the audio HAL only receives the vendor codec configs (aptX Adaptive) from
+// that provider. persist.bluetooth.a2dp_offload.qti_hal=false keeps the AOSP provider.
+bool qti_wanted() {
+  static const bool wanted =
+          osi_property_get_bool("persist.bluetooth.a2dp_offload.qti_hal", true) &&
+          qti::a2dp::is_available();
+  return wanted;
+}
+
+// The QTI provider was opened by init()
+bool use_qti() { return qti::a2dp::is_hal_enabled(); }
+
+}  // namespace
 
 std::string ahal_codec_configuration::ToString() const {
   std::string result_string;
@@ -61,6 +81,9 @@ std::string ahal_codec_configuration::ToString() const {
 bool update_codec_offloading_capabilities(
         const std::vector<btav_a2dp_codec_config_t>& framework_preference,
         bool supports_a2dp_hw_offload_v2) {
+  if (qti_wanted()) {
+    qti::a2dp::update_codec_offloading_capabilities(framework_preference);
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::update_codec_offloading_capabilities(framework_preference);
   }
@@ -70,6 +93,9 @@ bool update_codec_offloading_capabilities(
 
 // Check if new bluetooth_audio is enabled
 bool is_hal_enabled() {
+  if (use_qti()) {
+    return true;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::is_hal_2_0_enabled();
   }
@@ -78,6 +104,9 @@ bool is_hal_enabled() {
 
 // Check if new bluetooth_audio is running with offloading encoders
 bool is_hal_offloading() {
+  if (use_qti()) {
+    return qti::a2dp::is_hal_offloading();
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::is_hal_2_0_offloading();
   }
@@ -87,6 +116,9 @@ bool is_hal_offloading() {
 // Initialize BluetoothAudio HAL: openProvider
 bool init(bluetooth::common::MessageLoopThread* message_loop,
           bluetooth::audio::a2dp::StreamCallbacks const* stream_callbacks, bool offload_enabled) {
+  if (qti_wanted() && qti::a2dp::init(message_loop, stream_callbacks, offload_enabled)) {
+    return true;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::init(message_loop, stream_callbacks, offload_enabled);
   }
@@ -95,6 +127,10 @@ bool init(bluetooth::common::MessageLoopThread* message_loop,
 
 // Clean up BluetoothAudio HAL
 void cleanup() {
+  if (use_qti()) {
+    qti::a2dp::cleanup();
+    return;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     hidl::a2dp::cleanup();
     return;
@@ -104,6 +140,9 @@ void cleanup() {
 
 // Set up the codec into BluetoothAudio HAL
 bool setup_codec(const ahal_codec_configuration& config) {
+  if (use_qti()) {
+    return qti::a2dp::setup_codec(config);
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::setup_codec(config);
   }
@@ -113,6 +152,10 @@ bool setup_codec(const ahal_codec_configuration& config) {
 // Send command to the BluetoothAudio HAL: StartSession, EndSession,
 // StreamStarted, StreamSuspended
 void start_session() {
+  if (use_qti()) {
+    qti::a2dp::start_session();
+    return;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     hidl::a2dp::start_session();
     return;
@@ -121,6 +164,10 @@ void start_session() {
 }
 
 void end_session() {
+  if (use_qti()) {
+    qti::a2dp::end_session();
+    return;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL) {
     return aidl::a2dp::end_session();
   }
@@ -131,6 +178,10 @@ void end_session() {
 }
 
 void ack_stream_started(Status status) {
+  if (use_qti()) {
+    qti::a2dp::ack_stream_started(status);
+    return;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     hidl::a2dp::ack_stream_started(status);
     return;
@@ -139,6 +190,10 @@ void ack_stream_started(Status status) {
 }
 
 void ack_stream_suspended(Status status) {
+  if (use_qti()) {
+    qti::a2dp::ack_stream_suspended(status);
+    return;
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     hidl::a2dp::ack_stream_suspended(status);
     return;
@@ -148,6 +203,9 @@ void ack_stream_suspended(Status status) {
 
 // Read from the FMQ of BluetoothAudio HAL
 size_t read(uint8_t* p_buf, uint32_t len) {
+  if (use_qti()) {
+    return qti::a2dp::read(p_buf, len);
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::read(p_buf, len);
   }
@@ -156,6 +214,9 @@ size_t read(uint8_t* p_buf, uint32_t len) {
 
 // Update A2DP delay report to BluetoothAudio HAL
 void set_remote_delay(uint16_t delay_report) {
+  if (qti_wanted()) {
+    qti::a2dp::set_remote_delay(delay_report);
+  }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     hidl::a2dp::set_remote_delay(delay_report);
     return;
@@ -165,7 +226,7 @@ void set_remote_delay(uint16_t delay_report) {
 
 // Set low latency buffer mode allowed or disallowed
 void set_audio_low_latency_mode_allowed(bool allowed) {
-  if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL) {
+  if (!qti_wanted() && HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL) {
     aidl::a2dp::set_low_latency_mode_allowed(allowed);
   }
 }
@@ -173,7 +234,7 @@ void set_audio_low_latency_mode_allowed(bool allowed) {
 // Check if OPUS codec is supported
 bool is_opus_supported() {
   // OPUS codec was added after HIDL HAL was frozen
-  if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL) {
+  if (!qti_wanted() && HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL) {
     return true;
   }
   return false;
@@ -183,14 +244,16 @@ namespace provider {
 
 // Lookup the codec info in the list of supported offloaded sink codecs.
 std::optional<btav_a2dp_codec_index_t> sink_codec_index(const uint8_t* p_codec_info) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::sink_codec_index(p_codec_info)
                  : std::nullopt;
 }
 
 // Lookup the codec info in the list of supported offloaded source codecs.
 std::optional<btav_a2dp_codec_index_t> source_codec_index(const uint8_t* p_codec_info) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::source_codec_index(p_codec_info)
                  : std::nullopt;
 }
@@ -202,7 +265,8 @@ std::optional<btav_a2dp_codec_index_t> source_codec_index(const uint8_t* p_codec
 // Returns nullopt if the codec_index is not assigned or codec extensibility
 // is not supported or enabled.
 std::optional<const char*> codec_index_str(btav_a2dp_codec_index_t codec_index) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::codec_index_str(codec_index)
                  : std::nullopt;
 }
@@ -210,7 +274,8 @@ std::optional<const char*> codec_index_str(btav_a2dp_codec_index_t codec_index) 
 // Return true if the codec is supported for the session type
 // A2DP_HARDWARE_ENCODING_DATAPATH or A2DP_HARDWARE_DECODING_DATAPATH.
 bool supports_codec(btav_a2dp_codec_index_t codec_index) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::supports_codec(codec_index)
                  : false;
 }
@@ -218,7 +283,8 @@ bool supports_codec(btav_a2dp_codec_index_t codec_index) {
 // Return the A2DP capabilities for the selected codec.
 bool codec_info(btav_a2dp_codec_index_t codec_index, bluetooth::a2dp::CodecId* codec_id,
                 uint8_t* codec_info, btav_a2dp_codec_config_t* codec_config) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::codec_info(codec_index, codec_id, codec_info, codec_config)
                  : false;
 }
@@ -230,7 +296,8 @@ std::optional<a2dp_configuration> get_a2dp_configuration(
         RawAddress peer_address, std::vector<a2dp_remote_capabilities> const& remote_seps,
         btav_a2dp_codec_config_t const& user_preferences,
         ::bluetooth::a2dp::CodecId user_preferred_codec_id) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::get_a2dp_configuration(
                            peer_address, remote_seps, user_preferences, user_preferred_codec_id)
                  : std::nullopt;
@@ -247,7 +314,8 @@ tA2DP_STATUS parse_a2dp_configuration(::bluetooth::a2dp::CodecId codec_id,
                                       const uint8_t* codec_info,
                                       btav_a2dp_codec_config_t* codec_parameters,
                                       std::vector<uint8_t>* vendor_specific_parameters) {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::provider::parse_a2dp_configuration(
                            codec_id, codec_info, codec_parameters, vendor_specific_parameters)
                  : A2DP_FAIL;
@@ -256,7 +324,8 @@ tA2DP_STATUS parse_a2dp_configuration(::bluetooth::a2dp::CodecId codec_id,
 }  // namespace provider
 
 std::optional<btav_a2dp_hal_provider_info_t> get_provider_info() {
-  return (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
+  return (!qti_wanted() &&
+                  HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL)
                  ? aidl::a2dp::get_provider_info()
                  : std::nullopt;
 }
