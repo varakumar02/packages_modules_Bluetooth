@@ -538,6 +538,36 @@ struct ControllerImpl::impl {
     ErrorCode status = complete_view.GetStatus();
     log::assert_that(status == ErrorCode::SUCCESS, "Status {}", status, ErrorCodeText(status));
     le_local_supported_features_ = complete_view.GetLeFeatures();
+    infer_iso_supported_commands();
+  }
+
+  // QCA6490 ROM 1.0 (OnePlus 9) sets the CIS/BIS LE feature bits and implements every Core 5.2
+  // ISO command, but leaves them out of Read_Local_Supported_Commands. Trust the feature bits.
+  // LE_Set_Host_Feature / LE_Read_ISO_Link_Quality are not implemented there, so they stay unset.
+  void infer_iso_supported_commands() {
+    auto set = [this](OpCodeIndex index) {
+      local_supported_commands_[(uint16_t)index / 10] |= 1 << ((uint16_t)index % 10);
+    };
+    // CIS Central / CIS Peripheral
+    if (le_local_supported_features_ & ((1ULL << 28) | (1ULL << 29))) {
+      for (auto index : {OpCodeIndex::LE_READ_BUFFER_SIZE_V2, OpCodeIndex::LE_READ_ISO_TX_SYNC,
+                         OpCodeIndex::LE_SET_CIG_PARAMETERS, OpCodeIndex::LE_CREATE_CIS,
+                         OpCodeIndex::LE_REMOVE_CIG, OpCodeIndex::LE_ACCEPT_CIS_REQUEST,
+                         OpCodeIndex::LE_REJECT_CIS_REQUEST, OpCodeIndex::LE_REQUEST_PEER_SCA,
+                         OpCodeIndex::LE_SETUP_ISO_DATA_PATH,
+                         OpCodeIndex::LE_REMOVE_ISO_DATA_PATH}) {
+        set(index);
+      }
+    }
+    // Isochronous Broadcaster / Synchronized Receiver
+    if (le_local_supported_features_ & ((1ULL << 30) | (1ULL << 31))) {
+      for (auto index : {OpCodeIndex::LE_READ_BUFFER_SIZE_V2, OpCodeIndex::LE_CREATE_BIG,
+                         OpCodeIndex::LE_TERMINATE_BIG, OpCodeIndex::LE_BIG_CREATE_SYNC,
+                         OpCodeIndex::LE_BIG_TERMINATE_SYNC, OpCodeIndex::LE_SETUP_ISO_DATA_PATH,
+                         OpCodeIndex::LE_REMOVE_ISO_DATA_PATH}) {
+        set(index);
+      }
+    }
   }
 
   void le_read_supported_states_handler(CommandCompleteView view) {
