@@ -252,17 +252,9 @@ BluetoothAudioSinkClientInterface::~BluetoothAudioSinkClientInterface() {
 }
 
 bool BluetoothAudioSinkClientInterface::UpdateAudioConfig(const AudioConfiguration& audio_config) {
-  bool is_software_session =
-          sink_->GetSessionType() == SessionType::A2DP_SOFTWARE_ENCODING_DATAPATH;
-  bool is_offload_session = sink_->GetSessionType() == SessionType::A2DP_HARDWARE_OFFLOAD_DATAPATH;
-  auto discriminator = audio_config.getDiscriminator();
-  bool is_software_audio_config =
-          is_software_session &&
-          discriminator == AudioConfiguration::hidl_discriminator::pcmConfig;
-  bool is_offload_audio_config =
-          is_offload_session &&
-          discriminator == AudioConfiguration::hidl_discriminator::codecConfig;
-  if (!is_software_audio_config && !is_offload_audio_config) {
+  // QTI AudioConfiguration is a raw HIDL union: the session type tells which member is set
+  if (sink_->GetSessionType() != SessionType::A2DP_SOFTWARE_ENCODING_DATAPATH &&
+      sink_->GetSessionType() != SessionType::A2DP_HARDWARE_OFFLOAD_DATAPATH) {
     return false;
   }
   sink_->UpdateAudioConfiguration(audio_config);
