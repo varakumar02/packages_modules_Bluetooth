@@ -142,31 +142,31 @@ bool ldac_offloading_capability_match(const LdacParameters& ldac_capability,
 // by preference of framework / Bluetooth SoC / runtime property.
 bool IsCodecOffloadingEnabled(const CodecConfiguration& codec_config) {
   for (auto preference : offloading_preference) {
-    if (codec_config.codecType != preference.codecCapabilities().codecType) {
+    if (codec_config.codecType != preference.codecCapabilities.codecType) {
       continue;
     }
-    auto codec_capability = preference.codecCapabilities();
+    auto codec_capability = preference.codecCapabilities;
     switch (codec_capability.codecType) {
       case CodecType::SBC: {
-        auto sbc_capability = codec_capability.capabilities.sbcCapabilities();
-        auto sbc_config = codec_config.config.sbcConfig();
+        auto sbc_capability = codec_capability.capabilities.sbcCapabilities;
+        auto sbc_config = codec_config.config.sbcConfig;
         return sbc_offloading_capability_match(sbc_capability, sbc_config);
       }
       case CodecType::AAC: {
-        auto aac_capability = codec_capability.capabilities.aacCapabilities();
-        auto aac_config = codec_config.config.aacConfig();
+        auto aac_capability = codec_capability.capabilities.aacCapabilities;
+        auto aac_config = codec_config.config.aacConfig;
         return aac_offloading_capability_match(aac_capability, aac_config);
       }
       case CodecType::APTX:
         [[fallthrough]];
       case CodecType::APTX_HD: {
-        auto aptx_capability = codec_capability.capabilities.aptxCapabilities();
-        auto aptx_config = codec_config.config.aptxConfig();
+        auto aptx_capability = codec_capability.capabilities.aptxCapabilities;
+        auto aptx_config = codec_config.config.aptxConfig;
         return aptx_offloading_capability_match(aptx_capability, aptx_config);
       }
       case CodecType::LDAC: {
-        auto ldac_capability = codec_capability.capabilities.ldacCapabilities();
-        auto ldac_config = codec_config.config.ldacConfig();
+        auto ldac_capability = codec_capability.capabilities.ldacCapabilities;
+        auto ldac_config = codec_config.config.ldacConfig;
         return ldac_offloading_capability_match(ldac_capability, ldac_config);
       }
       case CodecType::UNKNOWN:
@@ -236,8 +236,8 @@ static bool A2dpSbcToHalConfig(const ahal_codec_configuration& config,
     return false;
   }
   codec_config->codecType = CodecType::SBC;
-  codec_config->config.sbcConfig({});
-  auto sbc_config = codec_config->config.sbcConfig();
+  codec_config->config.sbcConfig = {};
+  auto sbc_config = codec_config->config.sbcConfig;
   sbc_config.sampleRate = A2dpCodecToHalSampleRate(config.codec_config);
   if (sbc_config.sampleRate == SampleRate::RATE_UNKNOWN) {
     log::error("Unknown SBC sample_rate={}", config.codec_config.sample_rate);
@@ -315,7 +315,7 @@ static bool A2dpSbcToHalConfig(const ahal_codec_configuration& config,
     log::error("Unknown SBC bits_per_sample={}", config.codec_config.bits_per_sample);
     return false;
   }
-  codec_config->config.sbcConfig(sbc_config);
+  codec_config->config.sbcConfig = sbc_config;
   return true;
 }
 
@@ -327,8 +327,8 @@ static bool A2dpAacToHalConfig(const ahal_codec_configuration& config,
     return false;
   }
   codec_config->codecType = CodecType::AAC;
-  codec_config->config.aacConfig({});
-  auto aac_config = codec_config->config.aacConfig();
+  codec_config->config.aacConfig = {};
+  auto aac_config = codec_config->config.aacConfig;
   uint8_t object_type = config.codec_specific_information_elements[A2DP_AAC_OBJECT_TYPE_IDX];
   switch (object_type) {
     case A2DP_AAC_OBJECT_TYPE_MPEG2_LC:
@@ -377,7 +377,7 @@ static bool A2dpAacToHalConfig(const ahal_codec_configuration& config,
   }
   aac_config.frameControlEnabled =
           osi_property_get_bool("persist.vendor.qcom.bluetooth.aac_frm_ctl.enabled", false);
-  codec_config->config.aacConfig(aac_config);
+  codec_config->config.aacConfig = aac_config;
   return true;
 }
 
@@ -393,8 +393,8 @@ static bool A2dpAptxToHalConfig(const ahal_codec_configuration& config,
   } else {
     codec_config->codecType = CodecType::APTX_HD;
   }
-  codec_config->config.aptxConfig({});
-  auto aptx_config = codec_config->config.aptxConfig();
+  codec_config->config.aptxConfig = {};
+  auto aptx_config = codec_config->config.aptxConfig;
   aptx_config.sampleRate = A2dpCodecToHalSampleRate(config.codec_config);
   if (aptx_config.sampleRate == SampleRate::RATE_UNKNOWN) {
     log::error("Unknown aptX sample_rate={}", config.codec_config.sample_rate);
@@ -410,7 +410,7 @@ static bool A2dpAptxToHalConfig(const ahal_codec_configuration& config,
     log::error("Unknown aptX bits_per_sample={}", config.codec_config.bits_per_sample);
     return false;
   }
-  codec_config->config.aptxConfig(aptx_config);
+  codec_config->config.aptxConfig = aptx_config;
   return true;
 }
 
@@ -421,8 +421,8 @@ bool A2dpLdacToHalConfig(const ahal_codec_configuration& config, CodecConfigurat
   }
 
   codec_config->codecType = CodecType::LDAC;
-  codec_config->config.ldacConfig({});
-  auto ldac_config = codec_config->config.ldacConfig();
+  codec_config->config.ldacConfig = {};
+  auto ldac_config = codec_config->config.ldacConfig;
   ldac_config.sampleRate = A2dpCodecToHalSampleRate(config.codec_config);
   if (ldac_config.sampleRate == SampleRate::RATE_UNKNOWN) {
     log::error("Unknown LDAC sample_rate={}", config.codec_config.sample_rate);
@@ -483,7 +483,7 @@ bool A2dpLdacToHalConfig(const ahal_codec_configuration& config, CodecConfigurat
     log::error("Unknown LDAC bits_per_sample={}", config.codec_config.bits_per_sample);
     return false;
   }
-  codec_config->config.ldacConfig(ldac_config);
+  codec_config->config.ldacConfig = ldac_config;
   return true;
 }
 
@@ -528,11 +528,7 @@ bool UpdateOffloadingCapabilities(
   }
   offloading_preference.clear();
   for (auto capability : audio_hal_capabilities) {
-    if (capability.getDiscriminator() !=
-        AudioCapabilities::hidl_discriminator::codecCapabilities) {
-      continue;
-    }
-    auto codec_type = capability.codecCapabilities().codecType;
+    auto codec_type = capability.codecCapabilities.codecType;
     if (std::find(enabled_codec_types.begin(), enabled_codec_types.end(), codec_type) !=
         enabled_codec_types.end()) {
       log::info("enabled offloading capability={}", toString(capability));
