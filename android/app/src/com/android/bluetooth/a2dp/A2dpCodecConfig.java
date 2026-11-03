@@ -21,6 +21,7 @@ import static java.util.Objects.requireNonNull;
 import android.bluetooth.BluetoothCodecConfig;
 import android.bluetooth.BluetoothCodecConfig.CodecPriority;
 import android.bluetooth.BluetoothCodecStatus;
+import android.bluetooth.BluetoothCodecType;
 import android.bluetooth.BluetoothDevice;
 import android.content.Context;
 import android.content.res.Resources;
@@ -45,8 +46,11 @@ class A2dpCodecConfig {
     private final Context mContext;
     private final A2dpNativeInterface mA2dpNativeInterface;
 
-    // Native BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE; there is no public codec type constant
-    private static final int SOURCE_CODEC_TYPE_APTX_ADAPTIVE = 7;
+    // Native BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE; there is no public codec type constant.
+    // BluetoothCodecType.createFromType() returns null for 7 (getCodecType() would then report
+    // SOURCE_CODEC_TYPE_INVALID), so the type is built with its vendor codec id 0xAD, company 0xD7.
+    private static final BluetoothCodecType APTX_ADAPTIVE_CODEC_TYPE =
+            new BluetoothCodecType(7, 0x00ad00d7ffL, "aptX-adaptive");
 
     private final BluetoothCodecConfig[] mCodecConfigPriorities;
     private @CodecPriority int mA2dpSourceCodecPrioritySbc =
@@ -77,7 +81,7 @@ class A2dpCodecConfig {
         // so the framework drops it; the native offload code intersects with the HAL capabilities.
         offloading.add(
                 new BluetoothCodecConfig.Builder()
-                        .setCodecType(SOURCE_CODEC_TYPE_APTX_ADAPTIVE)
+                        .setExtendedCodecType(APTX_ADAPTIVE_CODEC_TYPE)
                         .build());
         mCodecConfigOffloading = offloading.toArray(mCodecConfigOffloading);
     }
@@ -368,7 +372,7 @@ class A2dpCodecConfig {
         codecConfigArray[6] = codecConfig;
         codecConfig =
                 new BluetoothCodecConfig.Builder()
-                        .setCodecType(SOURCE_CODEC_TYPE_APTX_ADAPTIVE)
+                        .setExtendedCodecType(APTX_ADAPTIVE_CODEC_TYPE)
                         .setCodecPriority(mA2dpSourceCodecPriorityAptxAdaptive)
                         .build();
         codecConfigArray[7] = codecConfig;
