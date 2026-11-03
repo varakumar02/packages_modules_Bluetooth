@@ -261,6 +261,7 @@ bool init(bluetooth::common::MessageLoopThread* message_loop,
     log::info("restore DELAY {} ms", static_cast<float>(remote_delay / 10.0));
     static_cast<A2dpTransport*>(active_hal_interface->GetTransportInstance())
             ->SetRemoteDelay(remote_delay);
+    offloading_hal_interface->UpdateSinkLatency(remote_delay);
     remote_delay = 0;
   }
   return true;
@@ -421,6 +422,7 @@ void set_remote_delay(uint16_t delay_report) {
   log::verbose("DELAY {} ms", static_cast<float>(delay_report / 10.0));
   static_cast<A2dpTransport*>(active_hal_interface->GetTransportInstance())
           ->SetRemoteDelay(delay_report);
+  offloading_hal_interface->UpdateSinkLatency(delay_report);
 }
 
 }  // namespace a2dp

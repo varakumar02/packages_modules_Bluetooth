@@ -127,9 +127,14 @@ public:
   size_t ReadAudioData(uint8_t* p_buf, uint32_t len);
   // Renew the connection, used when the audio HAL restarted
   void RenewAudioProviderAndSession();
+  // Report the sink's AVDTP delay (1/10 ms) to the HAL as SessionParamType::SINK_LATENCY; the
+  // QTI offload shim reads it from there (audio_get_a2dp_sink_latency_qti), not from
+  // getPresentationPosition()
+  void UpdateSinkLatency(uint16_t delay_report);
 
 private:
   void FetchAudioProvider();
+  void SendSinkLatency();  // internal_mutex_ held
 
   mutable std::mutex internal_mutex_;
   android::sp<IBluetoothAudioProvider> provider_;
@@ -140,6 +145,7 @@ private:
   android::sp<BluetoothAudioDeathRecipient> death_recipient_;
   IBluetoothSinkTransportInstance* sink_;
   std::vector<AudioCapabilities> capabilities_;
+  uint16_t sink_latency_ = 0;
 };
 
 }  // namespace qti

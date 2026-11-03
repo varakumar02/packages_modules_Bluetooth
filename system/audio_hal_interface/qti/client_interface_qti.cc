@@ -36,6 +36,8 @@ using ::android::hardware::Return;
 using ::android::hardware::Void;
 using ::bluetooth::common::StopWatchLegacy;
 using IBluetoothAudioPort = ::vendor::qti::hardware::bluetooth_audio::V2_1::IBluetoothAudioPort;
+using ::vendor::qti::hardware::bluetooth_audio::V2_0::SessionParams;
+using ::vendor::qti::hardware::bluetooth_audio::V2_0::SessionParamType;
 
 using DataMQ =
         ::android::hardware::MessageQueue<uint8_t, ::android::hardware::kSynchronizedReadWrite>;
@@ -302,16 +304,39 @@ int BluetoothAudioSinkClientInterface::StartSession() {
              session_status == BluetoothAudioStatus::SUCCESS) {
     sink_->ResetPresentationPosition();
     session_started_ = true;
+    SendSinkLatency();
     return 0;
   }
   if (mDataMQ && mDataMQ->isValid()) {
     sink_->ResetPresentationPosition();
     session_started_ = true;
+    SendSinkLatency();
     return 0;
   }
   log::error("Failed to obtain a valid audio data path, status={}", toString(session_status));
   session_started_ = false;
   return -EIO;
+}
+
+void BluetoothAudioSinkClientInterface::UpdateSinkLatency(uint16_t delay_report) {
+  std::lock_guard<std::mutex> guard(internal_mutex_);
+  sink_latency_ = delay_report;
+  if (session_started_) {
+    SendSinkLatency();
+  }
+}
+
+void BluetoothAudioSinkClientInterface::SendSinkLatency() {
+  if (provider_ == nullptr || sink_latency_ == 0) {
+    return;
+  }
+  SessionParams session_params{};
+  session_params.paramType = SessionParamType::SINK_LATENCY;
+  session_params.param.sinkLatency = {sink_latency_, 0, {}};
+  auto hidl_retval = provider_->updateSessionParams(session_params);
+  if (!hidl_retval.isOk()) {
+    log::error("BluetoothAudioHal updateSessionParams failure: {}", hidl_retval.description());
+  }
 }
 
 void BluetoothAudioSinkClientInterface::StreamStarted(const BluetoothAudioCtrlAck& ack) {
