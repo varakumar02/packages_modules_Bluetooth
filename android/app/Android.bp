@@ -120,6 +120,8 @@ cc_library_shared {
         "libudrv-uipc",
         "libutils",
         "server_configurable_flags",
+        "vendor.qti.hardware.bluetooth_audio@2.0",
+        "vendor.qti.hardware.bluetooth_audio@2.1",
     ],
     shared_libs: [
         "libaaudio",
