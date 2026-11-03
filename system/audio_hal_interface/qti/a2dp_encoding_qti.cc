@@ -315,7 +315,7 @@ bool setup_codec(const ::bluetooth::audio::a2dp::ahal_codec_configuration& confi
       active_hal_interface = offloading_hal_interface;
     }
 
-    audio_config.codecConfig(codec_config);
+    audio_config.codecConfig = codec_config;
     return active_hal_interface->UpdateAudioConfig(audio_config);
   }
 
@@ -327,7 +327,7 @@ bool setup_codec(const ::bluetooth::audio::a2dp::ahal_codec_configuration& confi
       end_session();
       active_hal_interface = software_hal_interface;
     }
-    audio_config.pcmConfig(pcm_config);
+    audio_config.pcmConfig = pcm_config;
     return active_hal_interface->UpdateAudioConfig(audio_config);
   }
 
