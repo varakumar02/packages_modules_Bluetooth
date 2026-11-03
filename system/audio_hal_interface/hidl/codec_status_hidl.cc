@@ -510,6 +510,10 @@ bool UpdateOffloadingCapabilities(
       case BTAV_A2DP_CODEC_INDEX_SOURCE_LC3:
         log::warn("Ignore source codec_type={}, not supported", preference.codec_type);
         break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE:
+        log::warn("Ignore source codec_type={}, offloaded by the QTI HAL only",
+                  preference.codec_type);
+        break;
       case BTAV_A2DP_CODEC_INDEX_SOURCE_OPUS:
         log::warn("Ignore source codec_type={}, not supported on HIDL", preference.codec_type);
         break;
