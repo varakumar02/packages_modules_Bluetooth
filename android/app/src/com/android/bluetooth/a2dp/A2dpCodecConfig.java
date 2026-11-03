@@ -44,6 +44,9 @@ class A2dpCodecConfig {
     private final Context mContext;
     private final A2dpNativeInterface mA2dpNativeInterface;
 
+    // Native BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE; there is no public codec type constant
+    private static final int SOURCE_CODEC_TYPE_APTX_ADAPTIVE = 7;
+
     private final BluetoothCodecConfig[] mCodecConfigPriorities;
     private @CodecPriority int mA2dpSourceCodecPrioritySbc =
             BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
@@ -56,6 +59,8 @@ class A2dpCodecConfig {
     private @CodecPriority int mA2dpSourceCodecPriorityLdac =
             BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
     private @CodecPriority int mA2dpSourceCodecPriorityOpus =
+            BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
+    private @CodecPriority int mA2dpSourceCodecPriorityAptxAdaptive =
             BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
 
     private BluetoothCodecConfig[] mCodecConfigOffloading = new BluetoothCodecConfig[0];
@@ -298,8 +303,18 @@ class A2dpCodecConfig {
             mA2dpSourceCodecPriorityOpus = value;
         }
 
+        try {
+            value = resources.getInteger(R.integer.a2dp_source_codec_priority_aptx_adaptive);
+        } catch (NotFoundException e) {
+            value = BluetoothCodecConfig.CODEC_PRIORITY_DEFAULT;
+        }
+        if ((value >= BluetoothCodecConfig.CODEC_PRIORITY_DISABLED)
+                && (value < BluetoothCodecConfig.CODEC_PRIORITY_HIGHEST)) {
+            mA2dpSourceCodecPriorityAptxAdaptive = value;
+        }
+
         BluetoothCodecConfig codecConfig;
-        BluetoothCodecConfig[] codecConfigArray = new BluetoothCodecConfig[7];
+        BluetoothCodecConfig[] codecConfigArray = new BluetoothCodecConfig[8];
         codecConfig =
                 new BluetoothCodecConfig.Builder()
                         .setCodecType(BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC)
@@ -343,6 +358,12 @@ class A2dpCodecConfig {
                         .setCodecSpecific1(0x1337)
                         .build();
         codecConfigArray[6] = codecConfig;
+        codecConfig =
+                new BluetoothCodecConfig.Builder()
+                        .setCodecType(SOURCE_CODEC_TYPE_APTX_ADAPTIVE)
+                        .setCodecPriority(mA2dpSourceCodecPriorityAptxAdaptive)
+                        .build();
+        codecConfigArray[7] = codecConfig;
 
         return codecConfigArray;
     }
