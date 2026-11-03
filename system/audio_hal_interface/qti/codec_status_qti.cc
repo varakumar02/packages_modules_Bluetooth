@@ -26,6 +26,7 @@
 #include "a2dp_aac_constants.h"
 #include "a2dp_encoding.h"
 #include "a2dp_sbc_constants.h"
+#include "a2dp_vendor_aptx_adaptive.h"
 #include "a2dp_vendor_aptx_constants.h"
 #include "a2dp_vendor_aptx_hd_constants.h"
 #include "a2dp_vendor_ldac_constants.h"
@@ -38,7 +39,11 @@ namespace bluetooth::audio::qti::codec {
 using ::vendor::qti::hardware::bluetooth_audio::V2_0::AacObjectType;
 using ::vendor::qti::hardware::bluetooth_audio::V2_0::AacParameters;
 using ::vendor::qti::hardware::bluetooth_audio::V2_0::AacVariableBitRate;
+using ::vendor::qti::hardware::bluetooth_audio::V2_0::AptxAdaptiveChannelMode;
+using ::vendor::qti::hardware::bluetooth_audio::V2_0::AptxAdaptiveParameters;
+using ::vendor::qti::hardware::bluetooth_audio::V2_0::AptxMode;
 using ::vendor::qti::hardware::bluetooth_audio::V2_0::AptxParameters;
+using ::vendor::qti::hardware::bluetooth_audio::V2_0::InputMode;
 using ::vendor::qti::hardware::bluetooth_audio::V2_1::AudioCapabilities;
 using ::vendor::qti::hardware::bluetooth_audio::V2_0::BitsPerSample;
 using ::vendor::qti::hardware::bluetooth_audio::V2_0::ChannelMode;
@@ -138,6 +143,19 @@ bool ldac_offloading_capability_match(const LdacParameters& ldac_capability,
   return true;
 }
 
+bool aptx_adaptive_offloading_capability_match(const AptxAdaptiveParameters& capability,
+                                               const AptxAdaptiveParameters& config) {
+  if ((static_cast<SampleRate>(capability.sampleRate & config.sampleRate) ==
+       SampleRate::RATE_UNKNOWN) ||
+      (static_cast<BitsPerSample>(capability.bitsPerSample & config.bitsPerSample) ==
+       BitsPerSample::BITS_UNKNOWN)) {
+    log::warn("software codec={} capability={}", toString(config), toString(capability));
+    return false;
+  }
+  log::verbose("offloading codec={} capability={}", toString(config), toString(capability));
+  return true;
+}
+
 // Check whether this codec is supported by the audio HAL and is allowed to use
 // by preference of framework / Bluetooth SoC / runtime property.
 bool IsCodecOffloadingEnabled(const CodecConfiguration& codec_config) {
@@ -163,6 +181,12 @@ bool IsCodecOffloadingEnabled(const CodecConfiguration& codec_config) {
         auto aptx_capability = codec_capability.capabilities.aptxCapabilities;
         auto aptx_config = codec_config.config.aptxConfig;
         return aptx_offloading_capability_match(aptx_capability, aptx_config);
+      }
+      case CodecType::APTX_ADAPTIVE: {
+        auto aptx_adaptive_capability = codec_capability.capabilities.aptxAdaptiveCapabilities;
+        auto aptx_adaptive_config = codec_config.config.aptxAdaptiveConfig;
+        return aptx_adaptive_offloading_capability_match(aptx_adaptive_capability,
+                                                         aptx_adaptive_config);
       }
       case CodecType::LDAC: {
         auto ldac_capability = codec_capability.capabilities.ldacCapabilities;
@@ -487,6 +511,57 @@ bool A2dpLdacToHalConfig(const ahal_codec_configuration& config, CodecConfigurat
   return true;
 }
 
+// aptX-adaptive offload configuration, as Qualcomm's stack fills it
+// (audio_hal_interface/a2dp_encoding.cc, BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE)
+static bool A2dpAptxAdaptiveToHalConfig(const ahal_codec_configuration& config,
+                                        CodecConfiguration* codec_config) {
+  if (config.codec_config.codec_type != BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE) {
+    *codec_config = {};
+    return false;
+  }
+  tA2DP_APTX_ADAPTIVE_CIE cie;
+  if (!A2DP_GetAptxAdaptiveCIE(config.codec_specific_information_elements, &cie)) {
+    log::error("cannot parse the aptX-adaptive configuration");
+    return false;
+  }
+
+  codec_config->codecType = CodecType::APTX_ADAPTIVE;
+  codec_config->config.aptxAdaptiveConfig = {};
+  auto aptx_adaptive_config = codec_config->config.aptxAdaptiveConfig;
+  aptx_adaptive_config.sampleRate = A2dpCodecToHalSampleRate(config.codec_config);
+  if (aptx_adaptive_config.sampleRate == SampleRate::RATE_UNKNOWN) {
+    log::error("Unknown aptX-adaptive sample_rate={}", config.codec_config.sample_rate);
+    return false;
+  }
+  aptx_adaptive_config.bitsPerSample = A2dpCodecToHalBitsPerSample(config.codec_config);
+  if (aptx_adaptive_config.bitsPerSample == BitsPerSample::BITS_UNKNOWN) {
+    log::error("Unknown aptX-adaptive bits_per_sample={}", config.codec_config.bits_per_sample);
+    return false;
+  }
+  aptx_adaptive_config.channelMode = static_cast<AptxAdaptiveChannelMode>(cie.channelMode);
+  aptx_adaptive_config.aptxMode = AptxMode::HQ;
+  aptx_adaptive_config.sinkBuffering = {20, 50, 20, 50, 20, 50};
+  aptx_adaptive_config.ttp = {cie.aptx_data.ttp_ll_0,  cie.aptx_data.ttp_ll_1,
+                              cie.aptx_data.ttp_hq_0,  cie.aptx_data.ttp_hq_1,
+                              cie.aptx_data.ttp_tws_0, cie.aptx_data.ttp_tws_1};
+  aptx_adaptive_config.inputMode = InputMode::STEREO;
+  aptx_adaptive_config.inputFadeDuration = 0xff;
+  uint32_t features = cie.aptx_data.aptx_adaptive_sup_features;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[0] = cie.aptx_data.cap_ext_ver_num;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[1] = features & 0xFF;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[2] = (features >> 8) & 0xFF;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[3] = (features >> 16) & 0xFF;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[4] = (features >> 24) & 0xFF;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[5] = cie.aptx_data.first_setup_pref;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[6] = cie.aptx_data.second_setup_pref;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[7] = cie.aptx_data.third_setup_pref;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[8] = cie.aptx_data.fourth_setup_pref;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[9] = cie.aptx_data.eoc0;
+  aptx_adaptive_config.aptxAdaptiveConfigStream[10] = cie.aptx_data.eoc1;
+  codec_config->config.aptxAdaptiveConfig = aptx_adaptive_config;
+  return true;
+}
+
 }  // namespace
 
 bool UpdateOffloadingCapabilities(
@@ -510,6 +585,9 @@ bool UpdateOffloadingCapabilities(
         break;
       case BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC:
         enabled_codec_types.push_back(CodecType::LDAC);
+        break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE:
+        enabled_codec_types.push_back(CodecType::APTX_ADAPTIVE);
         break;
       case BTAV_A2DP_CODEC_INDEX_SOURCE_LC3:
       case BTAV_A2DP_CODEC_INDEX_SOURCE_OPUS:
@@ -582,6 +660,10 @@ bool getHalCodecConfiguration(const ahal_codec_configuration& config,
 
     case BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC:
       return A2dpLdacToHalConfig(config, codec_configuration) &&
+             IsCodecOffloadingEnabled(*codec_configuration);
+
+    case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE:
+      return A2dpAptxAdaptiveToHalConfig(config, codec_configuration) &&
              IsCodecOffloadingEnabled(*codec_configuration);
 
     case BTAV_A2DP_CODEC_INDEX_SOURCE_OPUS:
