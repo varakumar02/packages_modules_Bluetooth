@@ -558,6 +558,10 @@ bool UpdateOffloadingCapabilities(
       case BTAV_A2DP_CODEC_INDEX_SOURCE_LC3:
         log::warn("Ignore source codec_type={}, not implemented", preference.codec_type);
         break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE:
+        log::warn("Ignore source codec_type={}, offloaded by the QTI HAL only",
+                  preference.codec_type);
+        break;
       case BTAV_A2DP_CODEC_INDEX_SOURCE_OPUS:
         codec_type_set.insert(CodecType::OPUS);
         break;
