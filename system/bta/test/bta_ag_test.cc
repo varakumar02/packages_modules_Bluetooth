@@ -417,7 +417,7 @@ TEST_F(BtaAgScoTest, codec_negotiate__aptx_disabled) {
   p_scb->codec_updated = true;
 
   ASSERT_TRUE(enable_aptx_voice_property(false));
-  ASSERT_EQ(BT_STATUS_FAIL, enable_aptx_swb_codec(false, addr));
+  ASSERT_EQ(BT_STATUS_SUCCESS, enable_aptx_swb_codec(false, addr));
   bta_ag_codec_negotiate(p_scb);
   ASSERT_EQ(1, get_func_call_count("BTM_ReadRemoteFeatures"));
   ASSERT_EQ(0, get_func_call_count("PORT_WriteData"));

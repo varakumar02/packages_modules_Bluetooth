@@ -78,6 +78,10 @@ bool get_swb_codec_status(bluetooth::headset::bthf_swb_codec_t swb_codec, RawAdd
 }
 
 bt_status_t enable_aptx_swb_codec(bool enable, RawAddress bd_addr) {
+  // Without aptX voice the codec reads as off (get_swb_codec_status), so a disable is already done
+  if (!enable && !is_hfp_aptx_voice_enabled()) {
+    return BT_STATUS_SUCCESS;
+  }
   if (is_hfp_aptx_voice_enabled() && (!get_lc3_swb_codec_status(bd_addr))) {
     log::verbose("enable={}", enable);
     aptx_swb_codec_status = enable;
