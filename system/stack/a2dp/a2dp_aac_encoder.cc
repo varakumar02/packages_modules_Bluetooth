@@ -268,6 +268,9 @@ static void a2dp_aac_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
   // Calculate the bit rate from MTU and sampling frequency
   aac_peak_bit_rate = A2DP_ComputeMaxBitRateAac(p_codec_info, a2dp_aac_encoder_cb.TxAaMtuSize);
   aac_param_value = std::min(aac_param_value, aac_peak_bit_rate);
+  if (peer_params.max_bitrate != 0) {
+    aac_param_value = std::min(aac_param_value, static_cast<int>(peer_params.max_bitrate));
+  }
   log::info("MTU = {} Sampling Frequency = {} Bit Rate = {}", a2dp_aac_encoder_cb.TxAaMtuSize,
             aac_sampling_freq, aac_param_value);
   if (aac_param_value == -1) {
@@ -325,6 +328,11 @@ static void a2dp_aac_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
 
   // Set the encoder's parameters: Variable Bit Rate Support
   aac_param_value = A2DP_GetVariableBitRateSupportAac(p_codec_info);
+  if (peer_params.max_bitrate != 0 && aac_param_value == A2DP_AAC_VARIABLE_BIT_RATE_ENABLED) {
+    // Shared stream: CBR, which every AAC sink accepts whatever it negotiated
+    log::info("AAC shared with another sink, using CBR");
+    aac_param_value = A2DP_AAC_VARIABLE_BIT_RATE_DISABLED;
+  }
   if (aac_param_value == -1) {
     log::error(
             "Cannot set AAC parameter AACENC_BITRATEMODE: invalid codec bit rate "
