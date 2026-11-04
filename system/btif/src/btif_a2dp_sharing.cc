@@ -6,6 +6,7 @@
 #define LOG_TAG "btif_a2dp_sharing"
 
 #include "btif_a2dp_sharing.h"
+#include "audio_hal_interface/a2dp_encoding.h"
 #include "btif_av.h"
 #include "btif_a2dp_source.h"
 #include "btif_common.h"
@@ -89,10 +90,17 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
     }
 
     if (!primary.IsEmpty()) {
-        log::info("btif_a2dp_sharing: restarting source session for dual sharing setup (gen={})", generation);
         std::promise<void> promise;
         std::future<void> future = promise.get_future();
-        btif_a2dp_source_restart_session(primary, primary, std::move(promise));
+        if (bluetooth::audio::a2dp::is_hal_offloading()) {
+            log::info("btif_a2dp_sharing: restarting source session for dual sharing setup (gen={})", generation);
+            btif_a2dp_source_restart_session(primary, primary, std::move(promise));
+        } else {
+            // A session restart leaves the audio HAL output stream DISABLED until it is reopened,
+            // so a software session only gets its encoder re-initialized (SBC sharing caps).
+            log::info("btif_a2dp_sharing: re-initializing the encoder for dual sharing setup (gen={})", generation);
+            btif_a2dp_source_reinit_encoder(primary, std::move(promise));
+        }
 
         // Await the session restart completion signal (promise fulfillment) on a worker thread
         // and then chain secondary stream start back to the BTIF main thread without deadlock.
@@ -172,10 +180,15 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
     // Upshift: Restart source session for surviving active device to restore Hardware Offload or uncap SBC bitpool
     RawAddress current_active = btif_av_source_active_peer();
     if (!current_active.IsEmpty()) {
-        log::info("btif_a2dp_sharing: restarting session for surviving active device {} to restore full capabilities",
-                  current_active);
         std::promise<void> promise;
-        btif_a2dp_source_restart_session(current_active, current_active, std::move(promise));
+        if (btif_av_is_a2dp_offload_enabled()) {
+            log::info("btif_a2dp_sharing: restarting session for surviving active device {} to restore full capabilities",
+                      current_active);
+            btif_a2dp_source_restart_session(current_active, current_active, std::move(promise));
+        } else {
+            log::info("btif_a2dp_sharing: re-initializing the encoder for surviving active device {}", current_active);
+            btif_a2dp_source_reinit_encoder(current_active, std::move(promise));
+        }
     }
 
     // Invoke state callback on JNI thread without holding s_sharing_mutex

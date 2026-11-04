@@ -52,6 +52,12 @@ bool btif_a2dp_source_restart_session(const RawAddress& old_peer_address,
                                       const RawAddress& new_peer_address,
                                       std::promise<void> peer_ready_promise);
 
+// Re-initialize the encoder of the running session for |peer_address| on the
+// A2DP Source thread, without ending the audio HAL session.
+// |peer_ready_promise| is set once the encoder is ready.
+void btif_a2dp_source_reinit_encoder(const RawAddress& peer_address,
+                                     std::promise<void> peer_ready_promise);
+
 // End the A2DP Source session.
 // This function should be called by the BTIF state machine to end the
 // streaming session for |peer_address|.
