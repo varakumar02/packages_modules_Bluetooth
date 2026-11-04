@@ -143,6 +143,9 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
                     }
                 }
 
+                // Audio/video sync now waits for the later of the two sinks
+                bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
+
                 // Handle active streaming (kStateStarted)
                 if (btif_av_stream_started_ready(A2dpType::kSource)) {
                     log::info("btif_a2dp_sharing: primary stream active, starting stream for secondary peer {}", secondary);
@@ -215,6 +218,9 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
             btif_a2dp_source_reinit_encoder(current_active, std::move(promise));
         }
     }
+
+    // Back to the active sink's own delay
+    bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
 
     // Invoke state callback on JNI thread without holding s_sharing_mutex
     if (callbacks && callbacks->on_sharing_state_changed) {
