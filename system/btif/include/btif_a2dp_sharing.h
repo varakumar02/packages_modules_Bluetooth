@@ -36,6 +36,6 @@ const btav_sharing_interface_t* btif_a2dp_sharing_get_interface(void);
 bool btif_a2dp_sharing_is_active(void);
 bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& bd_addr);
 RawAddress btif_a2dp_sharing_get_sharing_peer(void);
-// persist.bluetooth.a2dp_sharing.offload_probe: share with A2DP offload kept on (test)
+// persist.bluetooth.a2dp_sharing.offload_probe (aosp, true or qti): share with A2DP offload kept on (test)
 bool btif_a2dp_sharing_offload_probe(void);
 void btif_a2dp_sharing_on_peer_disconnected(const RawAddress& bd_addr);

@@ -16,6 +16,7 @@
 #include <future>
 #include <thread>
 #include <chrono>
+#include <cstring>
 #include <base/functional/bind.h>
 #include "osi/include/properties.h"
 #include "stack/include/main_thread.h"
@@ -42,7 +43,9 @@ bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& bd_addr) {
 }
 
 bool btif_a2dp_sharing_offload_probe(void) {
-    return osi_property_get_bool("persist.bluetooth.a2dp_sharing.offload_probe", false);
+    char mode[PROPERTY_VALUE_MAX] = {};
+    osi_property_get("persist.bluetooth.a2dp_sharing.offload_probe", mode, "");
+    return mode[0] != '\0' && strcmp(mode, "false") != 0 && strcmp(mode, "0") != 0;
 }
 
 RawAddress btif_a2dp_sharing_get_sharing_peer(void) {
