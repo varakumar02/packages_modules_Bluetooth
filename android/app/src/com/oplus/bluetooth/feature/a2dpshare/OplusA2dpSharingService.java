@@ -58,7 +58,21 @@ public class OplusA2dpSharingService extends Service {
     public static final int SHARING_TYPE_FORMAL = 1;
     public static final int SHARING_TYPE_PROVISIONAL = 2;
 
-    private static final long SBC_SHARING_CODEC_SPECIFIC_2 = 22L;
+    // Marks a codec config set by sharing (also how a snapshot recognizes it)
+    private static final int SHARING_CODEC_PRIORITY = 1000000;
+    // auto (default), ldac, aptx_hd, aptx, aac or sbc; written by DeviceSettings
+    private static final String PROP_SHARING_CODEC = "persist.bluetooth.a2dp_sharing.codec";
+    // Best first. Both sinks decode the same packets, so only codecs with a software
+    // encoder can be shared (aptX Adaptive is offload-only).
+    private static final int[] SHARING_CODEC_ORDER = {
+        BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC,
+        BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX_HD,
+        BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX,
+        BluetoothCodecConfig.SOURCE_CODEC_TYPE_AAC,
+        BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC,
+    };
+    // LDAC 660 kbps (standard quality) per sink: two 990 kbps streams don't fit the air time
+    private static final long LDAC_SHARING_QUALITY = 1001L;
     private static final ExecutorService sAsyncExecutor = Executors.newSingleThreadExecutor();
 
     private final RemoteCallbackList<IOplusA2dpSharingStateCallback> mStateCallbacks =
@@ -119,22 +133,7 @@ public class OplusA2dpSharingService extends Service {
                 case BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED -> {
                     BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     int state = intent.getIntExtra(BluetoothProfile.EXTRA_STATE, BluetoothProfile.STATE_DISCONNECTED);
-                    if (state == BluetoothProfile.STATE_CONNECTED && device != null) {
-                        boolean masterOn;
-                        synchronized (mLock) {
-                            masterOn = mMasterSwitchEnabled;
-                        }
-                        if (masterOn) {
-                            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
-                            if (adapterService != null) {
-                                A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
-                                if (a2dpService != null) {
-                                    snapshotCodec(a2dpService, device);
-                                    applySharingCodec(a2dpService, device);
-                                }
-                            }
-                        }
-                    } else if (state == BluetoothProfile.STATE_DISCONNECTED && device != null) {
+                    if (state == BluetoothProfile.STATE_DISCONNECTED && device != null) {
                         boolean shouldTeardown;
                         synchronized (mLock) {
                             shouldTeardown = (mInSharingMode || mStarting)
@@ -167,20 +166,6 @@ public class OplusA2dpSharingService extends Service {
                             if (activeDevice != null) {
                                 mPrimaryDevice = activeDevice;
                                 Log.i(TAG, "Updated prospective primary device to: " + activeDevice);
-                                boolean masterOn;
-                                synchronized (mLock) {
-                                    masterOn = mMasterSwitchEnabled;
-                                }
-                                if (masterOn) {
-                                    AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
-                                    if (adapterService != null) {
-                                        A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
-                                        if (a2dpService != null) {
-                                            snapshotCodec(a2dpService, activeDevice);
-                                            applySharingCodec(a2dpService, activeDevice);
-                                        }
-                                    }
-                                }
                             }
                         }
                     }
@@ -219,15 +204,7 @@ public class OplusA2dpSharingService extends Service {
             A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
             if (a2dpService == null) return true;
 
-            if (enabled) {
-                List<BluetoothDevice> connectedDevices = a2dpService.getConnectedDevices();
-                if (connectedDevices != null) {
-                    for (BluetoothDevice dev : connectedDevices) {
-                        snapshotCodec(a2dpService, dev);
-                        applySharingCodec(a2dpService, dev);
-                    }
-                }
-            } else {
+            if (!enabled) {
                 boolean inSharing;
                 synchronized (mLock) {
                     inSharing = mInSharingMode || mStarting;
@@ -368,18 +345,19 @@ public class OplusA2dpSharingService extends Service {
                     snapshotCodec(a2dpService, primary);
                     snapshotCodec(a2dpService, device);
 
-                    // Apply dual-A2DP compatible SBC sharing configuration to both peers
-                    boolean primaryApplied = applySharingCodec(a2dpService, primary);
-                    boolean secondaryApplied = applySharingCodec(a2dpService, device);
-                    if (!primaryApplied || !secondaryApplied) {
-                        Log.e(TAG, "startSharing: failed to dispatch codec preferences, rolling back");
-                        rollbackSharing(a2dpService, primary, device);
-                        return;
+                    // Put both peers on the same codec config, best common codec first
+                    boolean configured = false;
+                    for (BluetoothCodecConfig cfg : sharingCodecCandidates(a2dpService, primary, device)) {
+                        Log.i(TAG, "startSharing: trying " + cfg);
+                        if (applySharingCodec(a2dpService, primary, cfg)
+                                && applySharingCodec(a2dpService, device, cfg)
+                                && waitForSharingCodec(a2dpService, primary, device, cfg, 1500)) {
+                            configured = true;
+                            break;
+                        }
                     }
-
-                    // Wait for both devices to confirm compatible SBC configuration (up to 1500ms)
-                    if (!waitForSbcCodec(a2dpService, primary, device, 1500)) {
-                        Log.e(TAG, "startSharing: codec transition to compatible SBC timed out, rolling back");
+                    if (!configured) {
+                        Log.e(TAG, "startSharing: no codec config both peers accept, rolling back");
                         rollbackSharing(a2dpService, primary, device);
                         return;
                     }
@@ -671,14 +649,9 @@ public class OplusA2dpSharingService extends Service {
             BluetoothCodecStatus status = a2dpService.getCodecStatus(device);
             BluetoothCodecConfig cfg = (status != null) ? status.getCodecConfig() : null;
 
-            // Skip snapshotting if current configuration is already our forced SBC sharing config
-            // (prevents recording forced SBC as original if service restarts with master switch ON)
-            if (cfg != null && cfg.getCodecType() == BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC
-                    && cfg.getSampleRate() == BluetoothCodecConfig.SAMPLE_RATE_44100
-                    && cfg.getBitsPerSample() == BluetoothCodecConfig.BITS_PER_SAMPLE_16
-                    && cfg.getChannelMode() == BluetoothCodecConfig.CHANNEL_MODE_STEREO
-                    && cfg.getCodecSpecific2() == SBC_SHARING_CODEC_SPECIFIC_2) {
-                Log.i(TAG, "snapshotCodec for " + device + ": current config is already forced sharing SBC, skipping");
+            // Never record a config sharing itself set as the one to restore
+            if (cfg != null && cfg.getCodecPriority() == SHARING_CODEC_PRIORITY) {
+                Log.i(TAG, "snapshotCodec for " + device + ": current config was set by sharing, skipping");
                 return;
             }
 
@@ -689,34 +662,105 @@ public class OplusA2dpSharingService extends Service {
         }
     }
 
-    private static boolean applySharingCodec(A2dpService a2dpService, BluetoothDevice device) {
+    private static String getSharingCodecProperty() {
         try {
-            // Check if device is already configured with SBC sharing parameters to avoid redundant re-negotiation
-            BluetoothCodecStatus status = a2dpService.getCodecStatus(device);
-            if (status != null && status.getCodecConfig() != null) {
-                BluetoothCodecConfig cur = status.getCodecConfig();
-                if (cur.getCodecType() == BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC
-                        && cur.getSampleRate() == BluetoothCodecConfig.SAMPLE_RATE_44100
-                        && cur.getBitsPerSample() == BluetoothCodecConfig.BITS_PER_SAMPLE_16
-                        && cur.getChannelMode() == BluetoothCodecConfig.CHANNEL_MODE_STEREO) {
-                    Log.i(TAG, "applySharingCodec: " + device + " already configured with SBC sharing codec, skipping re-negotiation");
-                    return true;
-                }
-            }
+            Class<?> sp = Class.forName("android.os.SystemProperties");
+            Method get = sp.getMethod("get", String.class, String.class);
+            return (String) get.invoke(null, PROP_SHARING_CODEC, "auto");
+        } catch (Exception e) {
+            return "auto";
+        }
+    }
 
-            // Explicitly configure SBC parameters matching dual-A2DP sharing requirements.
-            // Using highest priority (1000000) forces SBC for the session without mutating
-            // or corrupting the persistent optional-codecs preference in DatabaseManager.
-            BluetoothCodecConfig sbcConfig = new BluetoothCodecConfig.Builder()
-                    .setCodecType(BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC)
-                    .setCodecPriority(1000000) // Highest priority
-                    .setSampleRate(BluetoothCodecConfig.SAMPLE_RATE_44100)
-                    .setBitsPerSample(BluetoothCodecConfig.BITS_PER_SAMPLE_16)
+    private static int codecTypeFromName(String name) {
+        switch (name) {
+            case "ldac": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC;
+            case "aptx_hd": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX_HD;
+            case "aptx": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX;
+            case "aac": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_AAC;
+            case "sbc": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC;
+            default: return -1;
+        }
+    }
+
+    private static BluetoothCodecConfig findCapability(BluetoothCodecStatus status, int type) {
+        if (status == null) return null;
+        for (BluetoothCodecConfig cap : status.getCodecsSelectableCapabilities()) {
+            if (cap.getCodecType() == type) return cap;
+        }
+        return null;
+    }
+
+    /**
+     * Codec configs both peers can take, in the order to try them: the codec chosen in
+     * PROP_SHARING_CODEC first (if both support it), then SHARING_CODEC_ORDER.
+     */
+    private static List<BluetoothCodecConfig> sharingCodecCandidates(A2dpService a2dpService,
+            BluetoothDevice primary, BluetoothDevice secondary) {
+        BluetoothCodecStatus primStatus = a2dpService.getCodecStatus(primary);
+        BluetoothCodecStatus secStatus = a2dpService.getCodecStatus(secondary);
+        List<Integer> order = new ArrayList<>();
+        int preferred = codecTypeFromName(getSharingCodecProperty());
+        if (preferred != -1) order.add(preferred);
+        for (int type : SHARING_CODEC_ORDER) {
+            if (type != preferred) order.add(type);
+        }
+
+        List<BluetoothCodecConfig> candidates = new ArrayList<>();
+        for (int type : order) {
+            BluetoothCodecConfig a = findCapability(primStatus, type);
+            BluetoothCodecConfig b = findCapability(secStatus, type);
+            if (a == null || b == null) continue;
+            int rates = a.getSampleRate() & b.getSampleRate();
+            int sampleRate = (rates & BluetoothCodecConfig.SAMPLE_RATE_44100) != 0
+                    ? BluetoothCodecConfig.SAMPLE_RATE_44100
+                    : (rates & BluetoothCodecConfig.SAMPLE_RATE_48000) != 0
+                    ? BluetoothCodecConfig.SAMPLE_RATE_48000 : 0;
+            int bits = a.getBitsPerSample() & b.getBitsPerSample();
+            int bitsPerSample = (bits & BluetoothCodecConfig.BITS_PER_SAMPLE_24) != 0
+                    ? BluetoothCodecConfig.BITS_PER_SAMPLE_24
+                    : (bits & BluetoothCodecConfig.BITS_PER_SAMPLE_16) != 0
+                    ? BluetoothCodecConfig.BITS_PER_SAMPLE_16 : 0;
+            boolean stereo = (a.getChannelMode() & b.getChannelMode()
+                    & BluetoothCodecConfig.CHANNEL_MODE_STEREO) != 0;
+            if (sampleRate == 0 || bitsPerSample == 0 || !stereo) continue;
+            candidates.add(new BluetoothCodecConfig.Builder()
+                    .setCodecType(type)
+                    .setCodecPriority(SHARING_CODEC_PRIORITY)
+                    .setSampleRate(sampleRate)
+                    .setBitsPerSample(bitsPerSample)
                     .setChannelMode(BluetoothCodecConfig.CHANNEL_MODE_STEREO)
-                    .setCodecSpecific2(SBC_SHARING_CODEC_SPECIFIC_2)
-                    .build();
-            a2dpService.setCodecConfigPreference(device, sbcConfig);
-            Log.i(TAG, "applySharingCodec: enforced SBC sharing codec on " + device);
+                    .setCodecSpecific1(type == BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC
+                            ? LDAC_SHARING_QUALITY : 0)
+                    .build());
+        }
+        return candidates;
+    }
+
+    private static boolean matchesSharingCodec(BluetoothCodecConfig cur, BluetoothCodecConfig want) {
+        return cur != null
+                && cur.getCodecType() == want.getCodecType()
+                && cur.getSampleRate() == want.getSampleRate()
+                && cur.getBitsPerSample() == want.getBitsPerSample()
+                && cur.getChannelMode() == want.getChannelMode()
+                && (want.getCodecType() != BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC
+                        || cur.getCodecSpecific1() == want.getCodecSpecific1());
+    }
+
+    private static BluetoothCodecConfig currentCodec(A2dpService a2dpService, BluetoothDevice device) {
+        BluetoothCodecStatus status = a2dpService.getCodecStatus(device);
+        return status != null ? status.getCodecConfig() : null;
+    }
+
+    private static boolean applySharingCodec(A2dpService a2dpService, BluetoothDevice device,
+            BluetoothCodecConfig cfg) {
+        try {
+            if (matchesSharingCodec(currentCodec(a2dpService, device), cfg)) {
+                Log.i(TAG, "applySharingCodec: " + device + " already on the sharing codec");
+                return true;
+            }
+            a2dpService.setCodecConfigPreference(device, cfg);
+            Log.i(TAG, "applySharingCodec: requested sharing codec on " + device);
             return true;
         } catch (Exception e) {
             Log.e(TAG, "Failed to apply sharing codec on " + device, e);
@@ -724,63 +768,27 @@ public class OplusA2dpSharingService extends Service {
         }
     }
 
-    private static boolean areSbcConfigsCompatible(A2dpService a2dpService, BluetoothDevice primary, BluetoothDevice secondary) {
-        if (a2dpService == null || primary == null || secondary == null) return false;
-        try {
-            BluetoothCodecStatus primStatus = a2dpService.getCodecStatus(primary);
-            BluetoothCodecStatus secStatus = a2dpService.getCodecStatus(secondary);
-            if (primStatus == null || secStatus == null) return false;
-            BluetoothCodecConfig primCfg = primStatus.getCodecConfig();
-            BluetoothCodecConfig secCfg = secStatus.getCodecConfig();
-            if (primCfg == null || secCfg == null) return false;
-
-            if (primCfg.getCodecType() != BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC ||
-                secCfg.getCodecType() != BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC) {
-                return false;
-            }
-
-            if (primCfg.getSampleRate() != secCfg.getSampleRate()) {
-                Log.w(TAG, "SBC sample rate mismatch: prim=" + primCfg.getSampleRate()
-                        + ", sec=" + secCfg.getSampleRate());
-                return false;
-            }
-
-            if (primCfg.getChannelMode() != secCfg.getChannelMode()) {
-                Log.w(TAG, "SBC channel mode mismatch: prim=" + primCfg.getChannelMode()
-                        + ", sec=" + secCfg.getChannelMode());
-                return false;
-            }
-
-            if (primCfg.getBitsPerSample() != secCfg.getBitsPerSample()) {
-                Log.w(TAG, "SBC bits per sample mismatch: prim=" + primCfg.getBitsPerSample()
-                        + ", sec=" + secCfg.getBitsPerSample());
-                return false;
-            }
-
-            return true;
-        } catch (Exception e) {
-            Log.w(TAG, "areSbcConfigsCompatible check failed", e);
-            return false;
-        }
-    }
-
-    private static boolean waitForSbcCodec(A2dpService a2dpService, BluetoothDevice primary,
-                                    BluetoothDevice secondary, long timeoutMs) {
+    private static boolean waitForSharingCodec(A2dpService a2dpService, BluetoothDevice primary,
+            BluetoothDevice secondary, BluetoothCodecConfig cfg, long timeoutMs) {
         long start = System.currentTimeMillis();
         while (System.currentTimeMillis() - start < timeoutMs) {
-            if (areSbcConfigsCompatible(a2dpService, primary, secondary)) {
-                Log.i(TAG, "waitForSbcCodec: both primary and secondary verified compatible on SBC in "
-                        + (System.currentTimeMillis() - start) + "ms");
-                return true;
-            }
             try {
+                if (matchesSharingCodec(currentCodec(a2dpService, primary), cfg)
+                        && matchesSharingCodec(currentCodec(a2dpService, secondary), cfg)) {
+                    Log.i(TAG, "waitForSharingCodec: both peers on the sharing codec in "
+                            + (System.currentTimeMillis() - start) + "ms");
+                    return true;
+                }
                 Thread.sleep(50);
             } catch (InterruptedException e) {
                 Thread.currentThread().interrupt();
                 return false;
+            } catch (Exception e) {
+                Log.w(TAG, "waitForSharingCodec check failed", e);
+                return false;
             }
         }
-        Log.w(TAG, "waitForSbcCodec: timed out waiting for compatible SBC configs");
+        Log.w(TAG, "waitForSharingCodec: timed out");
         return false;
     }
 
@@ -894,25 +902,17 @@ public class OplusA2dpSharingService extends Service {
         if (adapterService != null) {
             A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
             if (a2dpService != null) {
-                boolean masterOn;
-                synchronized (mLock) {
-                    masterOn = mMasterSwitchEnabled;
+                if (secondary != null) {
+                    restoreDeviceCodec(a2dpService, secondary);
+                    mCodecSnapshots.remove(secondary);
                 }
-                if (!masterOn) {
-                    if (secondary != null) {
-                        restoreDeviceCodec(a2dpService, secondary);
-                        mCodecSnapshots.remove(secondary);
-                    }
-                    if (primary != null) {
-                        restoreDeviceCodec(a2dpService, primary);
-                        mCodecSnapshots.remove(primary);
-                    }
-                    for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
-                        restoreDeviceCodec(a2dpService, dev);
-                        mCodecSnapshots.remove(dev);
-                    }
-                } else {
-                    Log.i(TAG, "finishTeardown: master switch is ON, retaining SBC priming for connected devices");
+                if (primary != null) {
+                    restoreDeviceCodec(a2dpService, primary);
+                    mCodecSnapshots.remove(primary);
+                }
+                for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
+                    restoreDeviceCodec(a2dpService, dev);
+                    mCodecSnapshots.remove(dev);
                 }
             }
         }
