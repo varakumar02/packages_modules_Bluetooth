@@ -124,6 +124,9 @@ static void cleanup(void) {
     s_in_sharing_mode = false;
     ++s_sharing_generation;
     set_sharing_active_prop(false);
+    // Bluetooth off while sharing skips the exit, which resets the hold
+    s_hold_ms = 0;
+    osi_property_set("bluetooth.a2dp_sharing.hold_ms", "0");
 }
 
 static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
