@@ -4120,13 +4120,10 @@ uint16_t btif_av_get_audio_delay(const A2dpType local_a2dp_type) {
   BtifAvPeer* peer = btif_av_find_active_peer(local_a2dp_type);
   if (peer != nullptr && peer->IsSink()) {
     uint16_t delay = peer->GetDelayReport();
-    // Sharing: audio/video sync waits for the later sink, the sharing peer counting its lip
-    // sync hold (btif_a2dp_sharing_hold_ms, in ms; delays are in 1/10 ms)
+    // Sharing: audio/video sync waits for the later sink after the lip sync hold, as computed by
+    // btif_a2dp_sharing_update_hold (headset latency adjustments included)
     if (local_a2dp_type == A2dpType::kSource && btif_a2dp_sharing_is_active()) {
-      BtifAvPeer* sharing = btif_av_find_peer(btif_a2dp_sharing_get_sharing_peer(), local_a2dp_type);
-      if (sharing != nullptr && sharing->IsSink()) {
-        delay = std::max<int>(delay, sharing->GetDelayReport() + btif_a2dp_sharing_hold_ms() * 10);
-      }
+      delay = std::max<int>(delay, btif_a2dp_sharing_audio_delay());
     }
     return delay;
   }

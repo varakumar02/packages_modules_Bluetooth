@@ -31,6 +31,7 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <cstdlib>
 #include <atomic>
 #include <chrono>
 #include <cstddef>
@@ -1028,7 +1029,7 @@ void bta_av_sharing_count_drop(void) { sharing_drop_count++; }
 
 // Lip sync (bta_av_sharing_hold) keeps hold_ms of audio queued for the sharing sink. LDAC
 // packets carry ~8 ms, so the queue is sized for 5 ms packets on top of the normal 6.
-size_t bta_av_sharing_queue_cap(void) { return 6 + btif_a2dp_sharing_hold_ms() / 5; }
+size_t bta_av_sharing_queue_cap(void) { return 6 + std::abs(btif_a2dp_sharing_hold_ms()) / 5; }
 
 void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
   /* Test whether there is more than one audio channel connected */
