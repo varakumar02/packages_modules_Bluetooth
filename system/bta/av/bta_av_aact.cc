@@ -56,19 +56,20 @@
 // Weak default definitions in case stack is compiled in isolated tests without btif
 __attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
 __attribute__((weak)) bool btif_a2dp_sharing_offload_probe(void) { return false; }
+__attribute__((weak)) int btif_a2dp_sharing_hold_ms(void) { return 0; }
 __attribute__((weak)) RawAddress btif_a2dp_sharing_get_sharing_peer(void) { return RawAddress::kEmpty; }
 __attribute__((weak)) bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& /* bd_addr */) {
   return false;
 }
 
-// Sync adjust (persist.bluetooth.a2dp_sharing.delay_ms): the sharing peer's copied packets wait in
-// its queue until they span that much audio (by media timestamp, in samples), so the sharing sink
-// plays that much later than the active one.
+// Lip sync (btif_a2dp_sharing_hold_ms): the sharing peer's copied packets wait in its queue until
+// they span that much audio (by media timestamp, in samples), so the sharing sink plays that much
+// later than the active one.
 static bool bta_av_sharing_hold(tBTA_AV_SCB* p_scb) {
   if (!btif_a2dp_sharing_is_active() || !btif_a2dp_sharing_is_sharing_peer(p_scb->PeerAddress())) {
     return false;
   }
-  int delay_ms = osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0);
+  int delay_ms = btif_a2dp_sharing_hold_ms();
   int sample_rate = A2DP_GetTrackSampleRate(p_scb->cfg.codec_info);
   if (delay_ms <= 0 || sample_rate <= 0) {
     return false;

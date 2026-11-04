@@ -4120,19 +4120,22 @@ uint16_t btif_av_get_audio_delay(const A2dpType local_a2dp_type) {
   BtifAvPeer* peer = btif_av_find_active_peer(local_a2dp_type);
   if (peer != nullptr && peer->IsSink()) {
     uint16_t delay = peer->GetDelayReport();
-    // Sharing: audio/video sync waits for the later sink, the sharing peer counting its sync
-    // adjust hold (persist.bluetooth.a2dp_sharing.delay_ms, in ms; delays are in 1/10 ms)
+    // Sharing: audio/video sync waits for the later sink, the sharing peer counting its lip
+    // sync hold (btif_a2dp_sharing_hold_ms, in ms; delays are in 1/10 ms)
     if (local_a2dp_type == A2dpType::kSource && btif_a2dp_sharing_is_active()) {
       BtifAvPeer* sharing = btif_av_find_peer(btif_a2dp_sharing_get_sharing_peer(), local_a2dp_type);
       if (sharing != nullptr && sharing->IsSink()) {
-        int hold = std::clamp(
-                osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0), 0, 1000);
-        delay = std::max<int>(delay, sharing->GetDelayReport() + hold * 10);
+        delay = std::max<int>(delay, sharing->GetDelayReport() + btif_a2dp_sharing_hold_ms() * 10);
       }
     }
     return delay;
   }
   return 0;
+}
+
+uint16_t btif_av_get_peer_delay_report(const RawAddress& peer_address) {
+  BtifAvPeer* peer = btif_av_find_peer(peer_address, A2dpType::kSource);
+  return (peer != nullptr && peer->IsSink()) ? peer->GetDelayReport() : 0;
 }
 
 bool btif_av_is_a2dp_offload_enabled() {

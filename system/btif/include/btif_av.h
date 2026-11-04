@@ -303,6 +303,11 @@ void btif_av_set_audio_delay(const RawAddress& peer_address, uint16_t delay,
 uint16_t btif_av_get_audio_delay(const A2dpType local_a2dp_type);
 
 /**
+ * AVDTP delay report of an A2DP sink peer (1/10 ms), 0 if unknown.
+ */
+uint16_t btif_av_get_peer_delay_report(const RawAddress& peer_address);
+
+/**
  *  check A2DP offload support enabled
  *  @param  none
  */
