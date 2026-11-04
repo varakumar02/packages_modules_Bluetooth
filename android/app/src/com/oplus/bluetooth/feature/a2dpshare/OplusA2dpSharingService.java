@@ -577,8 +577,27 @@ public class OplusA2dpSharingService extends Service {
                 // Native-initiated exit (e.g. BTA_AV_CLOSE_EVT) routes through teardown
                 teardown("native_stopped_callback", false);
             }
+            announceCodecForRouting();
         }
     };
+
+    /**
+     * Sharing moved the stream between the offload and the software session without a codec
+     * change: report the active device's codec again, so AudioService re-reads it
+     * (bluetooth.a2dp_sharing.active) and audio policy moves the sink to the matching module.
+     */
+    private static void announceCodecForRouting() {
+        AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+        if (adapterService == null) return;
+        A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
+        if (a2dpService == null) return;
+        BluetoothDevice active = a2dpService.getActiveDevice();
+        if (active == null) return;
+        BluetoothCodecStatus status = a2dpService.getCodecStatus(active);
+        if (status == null || status.getCodecConfig() == null) return;
+        Log.i(TAG, "announceCodecForRouting: " + active);
+        a2dpService.codecConfigUpdated(active, status, false);
+    }
 
     private synchronized boolean ensureNativeInitialized() {
         try {

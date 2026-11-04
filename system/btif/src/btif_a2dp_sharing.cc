@@ -42,6 +42,12 @@ bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& bd_addr) {
     return s_in_sharing_mode && (bd_addr == s_secondary_address);
 }
 
+// Read by the audio HAL interface (setup_codec: software session) and by AudioService
+// (BtHelper.getCodec: route to the software Bluetooth module) while sharing is on.
+static void set_sharing_active_prop(bool active) {
+    osi_property_set("bluetooth.a2dp_sharing.active", active ? "1" : "0");
+}
+
 bool btif_a2dp_sharing_offload_probe(void) {
     char mode[PROPERTY_VALUE_MAX] = {};
     osi_property_get("persist.bluetooth.a2dp_sharing.offload_probe", mode, "");
@@ -69,6 +75,7 @@ static bt_status_t init(btav_sharing_callbacks_t* callbacks) {
     std::lock_guard<std::mutex> lock(s_sharing_mutex);
     log::info("btif_a2dp_sharing: init called");
     s_callbacks = callbacks;
+    set_sharing_active_prop(false);
     return BT_STATUS_SUCCESS;
 }
 
@@ -80,6 +87,7 @@ static void cleanup(void) {
     s_secondary_address = RawAddress::kEmpty;
     s_in_sharing_mode = false;
     ++s_sharing_generation;
+    set_sharing_active_prop(false);
 }
 
 static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
@@ -104,9 +112,12 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
             log::info("btif_a2dp_sharing: offload probe, session left as it is (gen={})", generation);
             promise.set_value();
         } else if (bluetooth::audio::a2dp::is_hal_offloading()) {
+            // The restart's setup_codec moves the stream to the software session
+            set_sharing_active_prop(true);
             log::info("btif_a2dp_sharing: restarting source session for dual sharing setup (gen={})", generation);
             btif_a2dp_source_restart_session(primary, primary, std::move(promise));
         } else {
+            set_sharing_active_prop(true);
             // A session restart leaves the audio HAL output stream DISABLED until it is reopened,
             // so a software session only gets its encoder re-initialized (SBC sharing caps).
             log::info("btif_a2dp_sharing: re-initializing the encoder for dual sharing setup (gen={})", generation);
@@ -177,6 +188,7 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
             return;
         }
         s_in_sharing_mode = false;
+        set_sharing_active_prop(false);
         old_secondary = s_secondary_address;
         primary = s_primary_address;
         s_secondary_address = RawAddress::kEmpty;
