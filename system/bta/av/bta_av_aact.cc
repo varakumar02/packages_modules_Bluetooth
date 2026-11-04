@@ -2250,6 +2250,9 @@ void bta_av_data_path(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* /* p_data */) {
         } else {
           /* too many buffers in a2dp_list, drop it. */
           bta_av_co_audio_drop(p_scb->hndl, p_scb->PeerAddress());
+          if (btif_a2dp_sharing_is_active()) {
+            bta_av_sharing_count_drop();
+          }
           osi_free(p_buf);
         }
       }

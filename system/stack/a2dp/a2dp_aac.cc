@@ -131,8 +131,7 @@ static const tA2DP_ENCODER_INTERFACE a2dp_encoder_interface_aac = {
         a2dp_aac_get_encoder_interval_ms,
         a2dp_aac_get_effective_frame_size,
         a2dp_aac_send_frames,
-        nullptr  // set_transmit_queue_length
-};
+        a2dp_aac_set_transmit_queue_length};
 
 static const tA2DP_DECODER_INTERFACE a2dp_decoder_interface_aac = {
         a2dp_aac_decoder_init,

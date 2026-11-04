@@ -745,4 +745,11 @@ void BTA_AvSetPeerSep(const RawAddress& bdaddr, uint8_t sep);
  */
 void bta_av_sharing_offload_probe(void);
 
+/**
+ * Number of A2DP packets dropped so far while sharing (a sink's queue was full); the encoder's
+ * congestion signal for the shared stream.
+ */
+uint32_t bta_av_sharing_drop_count(void);
+void bta_av_sharing_count_drop(void);
+
 #endif /* BTA_AV_API_H */

@@ -237,6 +237,8 @@ void a2dp_aac_feeding_flush() { a2dp_aac_encoder_cb.aac_feeding_state.counter = 
 
 uint64_t a2dp_aac_get_encoder_interval_ms() { return a2dp_aac_encoder_cb.encoder_interval_ms; }
 
+void a2dp_aac_set_transmit_queue_length(size_t /* transmit_queue_length */) {}
+
 int a2dp_aac_get_effective_frame_size() { return a2dp_aac_encoder_cb.TxAaMtuSize; }
 
 void a2dp_aac_send_frames(uint64_t timestamp_us) {
