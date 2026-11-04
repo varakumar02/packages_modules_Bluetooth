@@ -189,11 +189,12 @@ static void a2dp_sbc_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
 
   if (btif_a2dp_sharing_is_active()) {
     a2dp_sbc_encoder_cb.hd = false;
-    constexpr int kSharingRobustBitpool = 30; // ~200 kbps per stream (~400 kbps combined for RF margin)
-    if (max_bitpool > kSharingRobustBitpool) {
-      log::info("a2dp_sbc_encoder: dual sharing active, capping max bitpool from {} to {} (RF robust profile)",
-                max_bitpool, kSharingRobustBitpool);
-      max_bitpool = std::max(min_bitpool, kSharingRobustBitpool);
+    // SBC high quality (bitpool 53, ~328 kbps at 44.1 kHz) per stream; two of them fit an EDR link
+    constexpr int kSharingMaxBitpool = 53;
+    if (max_bitpool > kSharingMaxBitpool) {
+      log::info("a2dp_sbc_encoder: dual sharing active, capping max bitpool from {} to {}",
+                max_bitpool, kSharingMaxBitpool);
+      max_bitpool = std::max(min_bitpool, kSharingMaxBitpool);
     }
   }
 
@@ -783,11 +784,6 @@ static uint8_t calculate_max_frames_per_packet(void) {
 }
 
 static uint16_t a2dp_sbc_source_rate(bool is_peer_edr) {
-  if (btif_a2dp_sharing_is_active()) {
-    log::info("a2dp_sbc_source_rate: dual sharing active, setting initial source rate to 200 kbps");
-    return 200;
-  }
-
   uint16_t rate = A2DP_SBC_DEFAULT_BITRATE;
 
   /* check if we're SBC HD */
