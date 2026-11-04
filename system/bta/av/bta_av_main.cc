@@ -31,6 +31,7 @@
 #include <stdio.h>
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1017,6 +1018,13 @@ bool bta_av_link_role_ok(tBTA_AV_SCB* p_scb, uint8_t bits) {
  * Returns          void
  *
  ******************************************************************************/
+// Packets dropped while sharing (a sink's queue full): the shared stream's congestion signal
+static std::atomic<uint32_t> sharing_drop_count{0};
+
+uint32_t bta_av_sharing_drop_count(void) { return sharing_drop_count.load(); }
+
+void bta_av_sharing_count_drop(void) { sharing_drop_count++; }
+
 void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
   /* Test whether there is more than one audio channel connected */
   if ((p_buf == NULL) || (bta_av_cb.audio_open_cnt < 2)) {
@@ -1052,6 +1060,9 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
     if (list_length(p_scbi->a2dp_list) > max_queue_size) {
       // Drop the oldest packet
       bta_av_co_audio_drop(p_scbi->hndl, p_scbi->PeerAddress());
+      if (btif_a2dp_sharing_is_active()) {
+        bta_av_sharing_count_drop();
+      }
       BT_HDR* p_buf_drop = static_cast<BT_HDR*>(list_front(p_scbi->a2dp_list));
       list_remove(p_scbi->a2dp_list, p_buf_drop);
       osi_free(p_buf_drop);

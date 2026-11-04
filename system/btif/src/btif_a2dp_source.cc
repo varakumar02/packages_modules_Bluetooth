@@ -46,6 +46,7 @@
 #include "avdt_api.h"
 #include "bta_av_api.h"
 #include "bta_av_ci.h"
+#include "btif_a2dp_sharing.h"
 #include "btif_av.h"
 #include "btif_av_co.h"
 #include "btif_common.h"
@@ -954,7 +955,18 @@ static void btif_a2dp_source_audio_handle_timer(void) {
 #endif
 
   if (btif_a2dp_source_cb.encoder_interface->set_transmit_queue_length != nullptr) {
-    btif_a2dp_source_cb.encoder_interface->set_transmit_queue_length(tx_queue_len);
+    size_t congestion = tx_queue_len;
+    // Sharing: the second sink's queue is downstream of tx_audio_queue, so a packet dropped for
+    // either sink since the last tick is reported as a full queue
+    if (btif_a2dp_sharing_is_active()) {
+      static uint32_t last_drop_count = 0;
+      uint32_t drop_count = bta_av_sharing_drop_count();
+      if (drop_count != last_drop_count) {
+        last_drop_count = drop_count;
+        congestion = std::max<size_t>(congestion, MAX_OUTPUT_A2DP_FRAME_QUEUE_SZ);
+      }
+    }
+    btif_a2dp_source_cb.encoder_interface->set_transmit_queue_length(congestion);
   }
 
   btif_a2dp_source_cb.encoder_interface->send_frames(timestamp_us);

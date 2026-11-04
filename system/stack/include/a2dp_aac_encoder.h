@@ -73,6 +73,9 @@ void a2dp_aac_feeding_flush(void);
 // Get the A2DP AAC encoder interval (in milliseconds).
 uint64_t a2dp_aac_get_encoder_interval_ms(void);
 
+// Set transmit queue length for the shared stream's adaptive bit rate.
+void a2dp_aac_set_transmit_queue_length(size_t transmit_queue_length);
+
 // Get the A2DP AAC encoded maximum frame size
 int a2dp_aac_get_effective_frame_size();
 

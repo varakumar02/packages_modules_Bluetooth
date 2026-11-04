@@ -98,6 +98,13 @@ typedef struct {
   tA2DP_AAC_FEEDING_STATE aac_feeding_state;
 
   a2dp_aac_encoder_stats_t stats;
+
+  // Shared stream congestion control (a2dp_aac_set_transmit_queue_length)
+  int base_bitrate_mode;     // AACENC_BITRATEMODE set by a2dp_aac_encoder_update()
+  int base_bitrate;          // AACENC_BITRATE set by a2dp_aac_encoder_update()
+  uint8_t congestion_level;  // 0: base settings, 1..3: CBR 128/96/64 kbps
+  uint16_t congested_ticks;
+  uint16_t clear_ticks;
 } tA2DP_AAC_ENCODER_CB;
 
 static tA2DP_AAC_ENCODER_CB a2dp_aac_encoder_cb;
@@ -283,6 +290,7 @@ static void a2dp_aac_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
                aac_error);
     return;  // TODO: Return an error?
   }
+  a2dp_aac_encoder_cb.base_bitrate = aac_param_value;
 
   // Set the encoder's parameters: PEAK Bit Rate
   aac_error = aacEncoder_SetParam(a2dp_aac_encoder_cb.aac_handle, AACENC_PEAK_BITRATE,
@@ -366,6 +374,10 @@ static void a2dp_aac_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
                aac_param_value, aac_error);
     return;  // TODO: Return an error?
   }
+  a2dp_aac_encoder_cb.base_bitrate_mode = aac_param_value;
+  a2dp_aac_encoder_cb.congestion_level = 0;
+  a2dp_aac_encoder_cb.congested_ticks = 0;
+  a2dp_aac_encoder_cb.clear_ticks = 0;
 
   // Mark the end of setting the encoder's parameters
   aac_error = aacEncEncode(a2dp_aac_encoder_cb.aac_handle, NULL, NULL, NULL, NULL);
@@ -392,6 +404,58 @@ static void a2dp_aac_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
 
   // After encoder params ready, reset the feeding state and its interval.
   a2dp_aac_feeding_reset();
+}
+
+// Shared stream only (peer_params.max_bitrate set): one encoded stream feeds two sinks over one
+// radio, so sustained congestion (transmit queue, or packets dropped for either sink) steps the
+// encoder down to CBR 128, 96 and 64 kbps (never above the base bit rate), and about 5 s without
+// it steps back up one level, like the adaptive VBR/ABR stock OxygenOS uses for its sharing.
+void a2dp_aac_set_transmit_queue_length(size_t transmit_queue_length) {
+  tA2DP_AAC_ENCODER_CB& cb = a2dp_aac_encoder_cb;
+  if (!cb.has_aac_handle || cb.peer_params.max_bitrate == 0) {
+    return;
+  }
+  constexpr size_t kCongestedQueue = 4;
+  constexpr uint16_t kCongestedTicks = 5;  // ~100 ms of encoder ticks
+  constexpr uint16_t kClearTicks = 250;    // ~5 s
+  constexpr uint8_t kMaxLevel = 3;
+  constexpr int kLevelBitrate[kMaxLevel + 1] = {0, 128000, 96000, 64000};
+
+  if (transmit_queue_length >= kCongestedQueue) {
+    cb.clear_ticks = 0;
+    // A drop (reported as a full queue) steps down at once
+    if (transmit_queue_length < 2 * kCongestedQueue && ++cb.congested_ticks < kCongestedTicks) {
+      return;
+    }
+    cb.congested_ticks = 0;
+    if (cb.congestion_level == kMaxLevel) {
+      return;
+    }
+    cb.congestion_level++;
+  } else if (transmit_queue_length <= 1) {
+    cb.congested_ticks = 0;
+    if (cb.congestion_level == 0 || ++cb.clear_ticks < kClearTicks) {
+      return;
+    }
+    cb.clear_ticks = 0;
+    cb.congestion_level--;
+  } else {
+    cb.congested_ticks = 0;
+    cb.clear_ticks = 0;
+    return;
+  }
+
+  int mode = cb.congestion_level == 0 ? cb.base_bitrate_mode : 0;  // 0: CBR
+  int bitrate = cb.congestion_level == 0
+                        ? cb.base_bitrate
+                        : std::min(cb.base_bitrate, kLevelBitrate[cb.congestion_level]);
+  if (aacEncoder_SetParam(cb.aac_handle, AACENC_BITRATEMODE, mode) != AACENC_OK ||
+      aacEncoder_SetParam(cb.aac_handle, AACENC_BITRATE, bitrate) != AACENC_OK) {
+    log::error("shared stream: cannot set AAC bit rate mode {} bit rate {}", mode, bitrate);
+    return;
+  }
+  log::info("shared stream: congestion level {} (queue {}), AAC bit rate mode {} bit rate {}",
+            cb.congestion_level, transmit_queue_length, mode, bitrate);
 }
 
 void a2dp_aac_encoder_cleanup(void) {
