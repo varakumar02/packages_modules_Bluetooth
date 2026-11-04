@@ -1044,6 +1044,17 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
     if (!(bta_av_cb.conn_audio & BTA_AV_HNDL_TO_MSK(i))) {
       continue; /* Audio is not connected */
     }
+    // Sharing: a sink that was reconfigured to another codec can't decode these packets
+    // (the bit rate may differ between the sinks, so not A2DP_CodecEquals)
+    if (btif_a2dp_sharing_is_active() &&
+        (!A2DP_CodecTypeEquals(p_scb->cfg.codec_info, p_scbi->cfg.codec_info) ||
+         A2DP_GetTrackSampleRate(p_scb->cfg.codec_info) !=
+                 A2DP_GetTrackSampleRate(p_scbi->cfg.codec_info) ||
+         A2DP_GetTrackChannelCount(p_scb->cfg.codec_info) !=
+                 A2DP_GetTrackChannelCount(p_scbi->cfg.codec_info))) {
+      log::warn("sharing: {} is not on the shared codec, packet not copied", p_scbi->PeerAddress());
+      continue;
+    }
 
     /* Enqueue the data */
     BT_HDR* p_new = (BT_HDR*)osi_malloc(copy_size);
