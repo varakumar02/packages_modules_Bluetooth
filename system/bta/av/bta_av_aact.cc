@@ -55,6 +55,8 @@
 
 // Weak default definitions in case stack is compiled in isolated tests without btif
 __attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
+__attribute__((weak)) bool btif_a2dp_sharing_offload_probe(void) { return false; }
+__attribute__((weak)) RawAddress btif_a2dp_sharing_get_sharing_peer(void) { return RawAddress::kEmpty; }
 
 #include "btif/include/btif_av_co.h"
 #include "btif/include/btif_config.h"
@@ -3090,6 +3092,7 @@ static void offload_vendor_callback(tBTM_VSC_CMPL* param) {
           log::info("No pending start command due to AVDTP suspend immediately");
         }
         (*bta_av_cb.p_cback)(BTA_AV_OFFLOAD_START_RSP_EVT, &value);
+        bta_av_sharing_offload_probe();
         break;
       default:
         break;
@@ -3117,11 +3120,8 @@ static uint8_t bta_av_get_coex_buffer_count(void) {
   return osi_property_get_int32("persist.bluetooth.a2dp_offload.coex_buf_count", 0);
 }
 
-static void bta_av_vendor_offload_start(tBTA_AV_SCB* p_scb, tBT_A2DP_OFFLOAD* offload_start) {
-  uint8_t* param = reinterpret_cast<uint8_t*>(osi_malloc(sizeof(tBT_A2DP_OFFLOAD)));
-  log::verbose("");
-
-  uint8_t* p_param = param;
+// Writes the VS_HCI_A2DP_OFFLOAD_START parameters, returns the end of them.
+static uint8_t* bta_av_put_offload_start(uint8_t* p_param, const tBT_A2DP_OFFLOAD* offload_start) {
   *p_param++ = VS_HCI_A2DP_OFFLOAD_START;
 
   UINT32_TO_STREAM(p_param, offload_start->codec_type);
@@ -3136,6 +3136,14 @@ static void bta_av_vendor_offload_start(tBTA_AV_SCB* p_scb, tBT_A2DP_OFFLOAD* of
   UINT16_TO_STREAM(p_param, offload_start->l2c_rcid);
   UINT16_TO_STREAM(p_param, offload_start->mtu);
   ARRAY_TO_STREAM(p_param, offload_start->codec_info, (int8_t)sizeof(offload_start->codec_info));
+  return p_param;
+}
+
+static void bta_av_vendor_offload_start(tBTA_AV_SCB* p_scb, tBT_A2DP_OFFLOAD* offload_start) {
+  uint8_t* param = reinterpret_cast<uint8_t*>(osi_malloc(sizeof(tBT_A2DP_OFFLOAD)));
+  log::verbose("");
+
+  uint8_t* p_param = bta_av_put_offload_start(param, offload_start);
   bta_av_cb.offload_start_pending_hndl = p_scb->hndl;
   bta_av_cb.offload_start_v2 = false;
   log::info(
@@ -3210,11 +3218,44 @@ static void bta_av_vendor_offload_start_v2(tBTA_AV_SCB* p_scb, A2dpCodecConfigEx
                                                               param, offload_vendor_callback);
 }
 
+// Sharing with A2DP offload kept on, a test (persist.bluetooth.a2dp_sharing.offload_probe):
+// once the active peer's stream is offloaded and the sharing peer's stream is started,
+// the same offload start is sent for the sharing peer's link, to see whether the
+// controller takes a second offloaded link and sends the stream to both sinks.
+static bool sharing_offload_probe_sent = false;
+
+static void sharing_offload_probe_callback(tBTM_VSC_CMPL* param) {
+  log::info("sharing offload probe: controller status {:#x} ({} bytes)",
+            param->param_len ? param->p_param_buf[0] : 0xff, param->param_len);
+}
+
+void bta_av_sharing_offload_probe(void) {
+  if (sharing_offload_probe_sent || !btif_a2dp_sharing_offload_probe() ||
+      !btif_a2dp_sharing_is_active() || bta_av_cb.offload_started_hndl == BTA_AV_INVALID_HANDLE) {
+    return;
+  }
+  tBTA_AV_SCB* p_scb = bta_av_addr_to_scb(btif_a2dp_sharing_get_sharing_peer());
+  if (p_scb == nullptr || !p_scb->started) {
+    return;
+  }
+  tBT_A2DP_OFFLOAD offload_start = {};
+  bta_av_offload_codec_builder(p_scb, &offload_start);
+  uint8_t param[sizeof(tBT_A2DP_OFFLOAD) + 1];
+  uint8_t* p_param = bta_av_put_offload_start(param, &offload_start);
+  log::info("sharing offload probe: offload start for {} codec {:#x} ACL {:#x} L2CAP {:#x} MTU {:#x}",
+            p_scb->PeerAddress(), offload_start.codec_type, offload_start.acl_hdl,
+            offload_start.l2c_rcid, offload_start.mtu);
+  sharing_offload_probe_sent = true;
+  get_btm_client_interface().vendor.BTM_VendorSpecificCommand(
+          HCI_CONTROLLER_A2DP, p_param - param, param, sharing_offload_probe_callback);
+}
+
 void bta_av_vendor_offload_stop() {
   uint8_t param[255];
   uint8_t* p_param = param;
 
   log::verbose("");
+  sharing_offload_probe_sent = false;
 
   if (bta_av_cb.offload_start_v2) {
     tBTA_AV_SCB* p_scb = bta_av_hndl_to_scb(bta_av_cb.offload_start_pending_hndl);

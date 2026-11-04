@@ -739,4 +739,10 @@ void bta_debug_av_dump(int fd);
  */
 void BTA_AvSetPeerSep(const RawAddress& bdaddr, uint8_t sep);
 
+/**
+ * Test for sharing with A2DP offload on (persist.bluetooth.a2dp_sharing.offload_probe):
+ * sends the offload start for the sharing peer's link once both streams are up.
+ */
+void bta_av_sharing_offload_probe(void);
+
 #endif /* BTA_AV_API_H */

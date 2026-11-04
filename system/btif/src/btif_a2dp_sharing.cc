@@ -17,6 +17,7 @@
 #include <thread>
 #include <chrono>
 #include <base/functional/bind.h>
+#include "osi/include/properties.h"
 #include "stack/include/main_thread.h"
 
 using namespace bluetooth;
@@ -38,6 +39,10 @@ bool btif_a2dp_sharing_is_active(void) {
 bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& bd_addr) {
     std::lock_guard<std::mutex> lock(s_sharing_mutex);
     return s_in_sharing_mode && (bd_addr == s_secondary_address);
+}
+
+bool btif_a2dp_sharing_offload_probe(void) {
+    return osi_property_get_bool("persist.bluetooth.a2dp_sharing.offload_probe", false);
 }
 
 RawAddress btif_a2dp_sharing_get_sharing_peer(void) {
@@ -92,7 +97,10 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
     if (!primary.IsEmpty()) {
         std::promise<void> promise;
         std::future<void> future = promise.get_future();
-        if (bluetooth::audio::a2dp::is_hal_offloading()) {
+        if (btif_a2dp_sharing_offload_probe()) {
+            log::info("btif_a2dp_sharing: offload probe, session left as it is (gen={})", generation);
+            promise.set_value();
+        } else if (bluetooth::audio::a2dp::is_hal_offloading()) {
             log::info("btif_a2dp_sharing: restarting source session for dual sharing setup (gen={})", generation);
             btif_a2dp_source_restart_session(primary, primary, std::move(promise));
         } else {
@@ -181,7 +189,9 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
     RawAddress current_active = btif_av_source_active_peer();
     if (!current_active.IsEmpty()) {
         std::promise<void> promise;
-        if (btif_av_is_a2dp_offload_enabled()) {
+        if (btif_a2dp_sharing_offload_probe()) {
+            log::info("btif_a2dp_sharing: offload probe, session left as it is");
+        } else if (btif_av_is_a2dp_offload_enabled()) {
             log::info("btif_a2dp_sharing: restarting session for surviving active device {} to restore full capabilities",
                       current_active);
             btif_a2dp_source_restart_session(current_active, current_active, std::move(promise));
