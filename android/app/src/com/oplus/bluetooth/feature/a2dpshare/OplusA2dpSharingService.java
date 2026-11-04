@@ -94,6 +94,8 @@ public class OplusA2dpSharingService extends Service {
 
     private final Handler mHandler = new Handler(Looper.getMainLooper());
     private Runnable mTeardownFallbackRunnable = null;
+    // Rolls back a start whose native STARTED never came; cancelled once it came or sharing stopped
+    private Runnable mEnterTimeoutRunnable = null;
 
     private static class DeviceCodecSnapshot {
         final int optionalCodecsPreference;
@@ -423,14 +425,20 @@ public class OplusA2dpSharingService extends Service {
                     }
 
                     // Safety timeout guard: abort if native STARTED callback does not arrive within 3000ms
-                    mHandler.postDelayed(() -> {
+                    Runnable enterTimeout = () -> {
                         synchronized (mLock) {
+                            mEnterTimeoutRunnable = null;
                             if (mStarting && !mInSharingMode) {
                                 Log.w(TAG, "startSharing: timeout waiting for native STARTED callback, rolling back");
                                 teardown("native_enter_timeout", true);
                             }
                         }
-                    }, 3000);
+                    };
+                    synchronized (mLock) {
+                        cancelEnterTimeout();
+                        mEnterTimeoutRunnable = enterTimeout;
+                    }
+                    mHandler.postDelayed(enterTimeout, 3000);
 
                     // Dynamic Absolute Volume fallback:
                     // If one device lacks Absolute Volume, force Absolute Volume OFF on the other device
@@ -605,6 +613,7 @@ public class OplusA2dpSharingService extends Service {
             boolean active = (state == 1);
             if (active) {
                 synchronized (mLock) {
+                    cancelEnterTimeout();
                     mInSharingMode = true;
                     if (primary != null) mPrimaryDevice = primary;
                     if (secondary != null) mSecondaryDevice = secondary;
@@ -871,8 +880,16 @@ public class OplusA2dpSharingService extends Service {
         }
     }
 
+    private void cancelEnterTimeout() {
+        if (mEnterTimeoutRunnable != null) {
+            mHandler.removeCallbacks(mEnterTimeoutRunnable);
+            mEnterTimeoutRunnable = null;
+        }
+    }
+
     private void rollbackSharing(A2dpService a2dpService, BluetoothDevice primary, BluetoothDevice secondary) {
         synchronized (mLock) {
+            cancelEnterTimeout();
             mInSharingMode = false;
             mStarting = false;
             mPrimaryDevice = null;
@@ -909,6 +926,7 @@ public class OplusA2dpSharingService extends Service {
                 Log.d(TAG, "teardown: already idle (" + reason + ")");
                 return;
             }
+            cancelEnterTimeout();
             primary = mPrimaryDevice;
             secondary = mSecondaryDevice;
             mInSharingMode = false;
