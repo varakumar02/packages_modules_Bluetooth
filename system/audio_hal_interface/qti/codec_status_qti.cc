@@ -25,6 +25,7 @@
 
 #include "a2dp_aac_constants.h"
 #include "a2dp_encoding.h"
+#include "a2dp_encoding_qti.h"
 #include "a2dp_sbc_constants.h"
 #include "a2dp_vendor_aptx_adaptive.h"
 #include "a2dp_vendor_aptx_constants.h"
@@ -539,7 +540,7 @@ static bool A2dpAptxAdaptiveToHalConfig(const ahal_codec_configuration& config,
     return false;
   }
   aptx_adaptive_config.channelMode = static_cast<AptxAdaptiveChannelMode>(cie.channelMode);
-  aptx_adaptive_config.aptxMode = AptxMode::HQ;
+  aptx_adaptive_config.aptxMode = static_cast<AptxMode>(::bluetooth::audio::qti::a2dp::get_aptx_mode());
   aptx_adaptive_config.sinkBuffering = {20, 50, 20, 50, 20, 50};
   aptx_adaptive_config.ttp = {cie.aptx_data.ttp_ll_0,  cie.aptx_data.ttp_ll_1,
                               cie.aptx_data.ttp_hq_0,  cie.aptx_data.ttp_hq_1,

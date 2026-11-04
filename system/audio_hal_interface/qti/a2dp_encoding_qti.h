@@ -63,6 +63,11 @@ size_t read(uint8_t* p_buf, uint32_t len);
 // Update A2DP delay report to BluetoothAudio HAL
 void set_remote_delay(uint16_t delay_report);
 
+// aptX Adaptive encoder mode (AptxMode HQ 0x1000 or LL 0x2000), requested by the audio HAL or by
+// the framework; sent to the controller while an aptX Adaptive offload stream is set up
+void set_aptx_mode(uint16_t aptx_mode);
+uint16_t get_aptx_mode();
+
 }  // namespace a2dp
 }  // namespace qti
 }  // namespace audio
