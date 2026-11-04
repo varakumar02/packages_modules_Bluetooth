@@ -1071,12 +1071,14 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
       max_queue_size = bta_av_sharing_queue_cap();
     }
 
-    if (list_length(p_scbi->a2dp_list) > max_queue_size) {
+    // One packet over: the sink can't keep up, a congestion drop. More: the cap shrank with a
+    // lowered lip sync hold, so the excess goes at once and isn't counted as congestion.
+    if (btif_a2dp_sharing_is_active() && list_length(p_scbi->a2dp_list) == max_queue_size + 1u) {
+      bta_av_sharing_count_drop();
+    }
+    while (list_length(p_scbi->a2dp_list) > max_queue_size) {
       // Drop the oldest packet
       bta_av_co_audio_drop(p_scbi->hndl, p_scbi->PeerAddress());
-      if (btif_a2dp_sharing_is_active()) {
-        bta_av_sharing_count_drop();
-      }
       BT_HDR* p_buf_drop = static_cast<BT_HDR*>(list_front(p_scbi->a2dp_list));
       list_remove(p_scbi->a2dp_list, p_buf_drop);
       osi_free(p_buf_drop);

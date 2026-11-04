@@ -71,13 +71,39 @@ static bool bta_av_sharing_hold(tBTA_AV_SCB* p_scb) {
   }
   int delay_ms = btif_a2dp_sharing_hold_ms();
   int sample_rate = A2DP_GetTrackSampleRate(p_scb->cfg.codec_info);
-  if (delay_ms <= 0 || sample_rate <= 0) {
+  if (sample_rate <= 0) {
     return false;
   }
-  uint32_t head = *reinterpret_cast<uint32_t*>(
-          static_cast<BT_HDR*>(list_front(p_scb->a2dp_list)) + 1);
   uint32_t tail = *reinterpret_cast<uint32_t*>(
           static_cast<BT_HDR*>(list_back(p_scb->a2dp_list)) + 1);
+
+  // A lowered hold leaves the old one queued, and the sink would stay that late: drop the
+  // excess at once, down to the new hold plus 40 ms. Not congestion, so not counted as a drop.
+  static int last_delay_ms = 0;
+  if (delay_ms < last_delay_ms) {
+    uint64_t keep = static_cast<uint64_t>(delay_ms + 40) * static_cast<uint64_t>(sample_rate);
+    size_t dropped = 0;
+    while (list_length(p_scb->a2dp_list) > 1) {
+      uint32_t second = *reinterpret_cast<uint32_t*>(
+              static_cast<BT_HDR*>(list_node(list_next(list_begin(p_scb->a2dp_list)))) + 1);
+      if (static_cast<uint64_t>(tail - second) * 1000 < keep) {
+        break;
+      }
+      BT_HDR* p_buf = static_cast<BT_HDR*>(list_front(p_scb->a2dp_list));
+      list_remove(p_scb->a2dp_list, p_buf);
+      osi_free(p_buf);
+      dropped++;
+    }
+    log::info("sharing lip sync: hold {} -> {} ms, {} queued packets dropped", last_delay_ms,
+              delay_ms, dropped);
+  }
+  last_delay_ms = delay_ms;
+  if (delay_ms <= 0) {
+    return false;
+  }
+
+  uint32_t head = *reinterpret_cast<uint32_t*>(
+          static_cast<BT_HDR*>(list_front(p_scb->a2dp_list)) + 1);
   return static_cast<uint64_t>(tail - head) * 1000 <
          static_cast<uint64_t>(delay_ms) * static_cast<uint64_t>(sample_rate);
 }
