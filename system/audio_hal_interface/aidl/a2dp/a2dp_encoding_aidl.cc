@@ -366,7 +366,8 @@ bool setup_codec(const ahal_codec_configuration& config) {
     return false;
   }
 
-  if (provider::supports_codec(config.codec_config.codec_type)) {
+  // Without an offload session (software-only init) every codec takes the software path.
+  if (offloading_hal_interface != nullptr && provider::supports_codec(config.codec_config.codec_type)) {
     // The codec is supported in the provider info (AIDL v4).
     // In this case, the codec is offloaded, and the configuration passed
     // as A2dpStreamConfiguration to the UpdateAudioConfig() interface
@@ -413,7 +414,7 @@ bool setup_codec(const ahal_codec_configuration& config) {
 
   // Compute the codec configuration for the hardware encoding session and
   // check if the parameters are supported.
-  if (getHalCodecConfiguration(config, &codec_config)) {
+  if (offloading_hal_interface != nullptr && getHalCodecConfiguration(config, &codec_config)) {
     if (!is_hal_offloading()) {
       log::info("Switching BluetoothAudio HAL to Hardware");
       end_session();
