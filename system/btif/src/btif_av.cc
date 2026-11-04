@@ -30,6 +30,7 @@
 #include <frameworks/proto_logging/stats/enums/bluetooth/enums.pb.h>
 #include <stdio.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <cstdio>
@@ -4109,8 +4110,8 @@ void btif_av_set_audio_delay(const RawAddress& peer_address, uint16_t delay,
       btif_report_audio_delay(peer_address, delay);
     }
     peer->SetDelayReport(delay);
-    if (peer->IsActivePeer()) {
-      bluetooth::audio::a2dp::set_remote_delay(peer->GetDelayReport());
+    if (peer->IsActivePeer() || btif_a2dp_sharing_is_sharing_peer(peer_address)) {
+      bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(local_a2dp_type));
     }
   }
 }
@@ -4118,7 +4119,18 @@ void btif_av_set_audio_delay(const RawAddress& peer_address, uint16_t delay,
 uint16_t btif_av_get_audio_delay(const A2dpType local_a2dp_type) {
   BtifAvPeer* peer = btif_av_find_active_peer(local_a2dp_type);
   if (peer != nullptr && peer->IsSink()) {
-    return peer->GetDelayReport();
+    uint16_t delay = peer->GetDelayReport();
+    // Sharing: audio/video sync waits for the later sink, the sharing peer counting its sync
+    // adjust hold (persist.bluetooth.a2dp_sharing.delay_ms, in ms; delays are in 1/10 ms)
+    if (local_a2dp_type == A2dpType::kSource && btif_a2dp_sharing_is_active()) {
+      BtifAvPeer* sharing = btif_av_find_peer(btif_a2dp_sharing_get_sharing_peer(), local_a2dp_type);
+      if (sharing != nullptr && sharing->IsSink()) {
+        int hold = std::clamp(
+                osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0), 0, 1000);
+        delay = std::max<int>(delay, sharing->GetDelayReport() + hold * 10);
+      }
+    }
+    return delay;
   }
   return 0;
 }
