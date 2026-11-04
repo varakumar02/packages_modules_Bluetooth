@@ -30,6 +30,7 @@
 #include <com_android_bluetooth_flags.h>
 #include <stdio.h>
 
+#include <algorithm>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -63,6 +64,7 @@ __attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
 #include "osi/include/alarm.h"
 #include "osi/include/allocator.h"
 #include "osi/include/list.h"
+#include "osi/include/properties.h"
 #include "stack/include/bt_hdr.h"
 #include "stack/include/bt_uuid16.h"
 #include "stack/include/btm_client_interface.h"
@@ -1042,7 +1044,9 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
 
     uint16_t max_queue_size = p_bta_av_cfg->audio_mqs;
     if (btif_a2dp_sharing_is_active()) {
-      max_queue_size = 6;
+      // Room for the sync adjust hold (bta_av_sharing_hold) on top, at 10 ms or more per packet
+      max_queue_size = 6 + std::clamp(
+              osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0) / 10, 0, 50);
     }
 
     if (list_length(p_scbi->a2dp_list) > max_queue_size) {
