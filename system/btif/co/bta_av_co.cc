@@ -54,6 +54,7 @@
 #include "device/include/interop.h"
 #include "include/hardware/bt_av.h"
 #include "osi/include/allocator.h"
+#include "stack/include/a2dp_aac.h"
 #include "stack/include/a2dp_aac_constants.h"
 #include "stack/include/a2dp_codec_api.h"
 #include "stack/include/a2dp_constants.h"
@@ -748,6 +749,7 @@ void BtaAvCo::SaveCodec(const RawAddress& peer_address, const uint8_t* new_codec
 void BtaAvCo::GetPeerEncoderParameters(const RawAddress& peer_address,
                                        tA2DP_ENCODER_INIT_PEER_PARAMS* p_peer_params) {
   uint16_t min_mtu = 0xFFFF;
+  uint32_t max_bitrate = 0;
   log::assert_that(p_peer_params != nullptr, "Peer address {}", peer_address);
 
   std::lock_guard<std::recursive_mutex> lock(peer_cache_->codec_lock_);
@@ -766,8 +768,17 @@ void BtaAvCo::GetPeerEncoderParameters(const RawAddress& peer_address,
     if (p_peer->mtu < min_mtu) {
       min_mtu = p_peer->mtu;
     }
+    // Both sinks decode the same AAC packets: encode for the lower bit rate.
+    if (btif_a2dp_sharing_is_active() &&
+        A2DP_GetCodecType(p_peer->codec_config) == A2DP_MEDIA_CT_AAC) {
+      int bitrate = A2DP_GetBitRateAac(p_peer->codec_config);
+      if (bitrate > 0 && (max_bitrate == 0 || static_cast<uint32_t>(bitrate) < max_bitrate)) {
+        max_bitrate = bitrate;
+      }
+    }
   }
   p_peer_params->peer_mtu = min_mtu;
+  p_peer_params->max_bitrate = max_bitrate;
   p_peer_params->is_peer_edr = btif_av_is_peer_edr(peer_address, A2dpType::kSource);
   p_peer_params->peer_supports_3mbps = btif_av_peer_supports_3mbps(peer_address, A2dpType::kSource);
   log::verbose("peer_address={} peer_mtu={} is_peer_edr={} peer_supports_3mbps={}", peer_address,
