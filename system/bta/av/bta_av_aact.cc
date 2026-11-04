@@ -3224,8 +3224,56 @@ static void bta_av_vendor_offload_start_v2(tBTA_AV_SCB* p_scb, A2dpCodecConfigEx
 // controller takes a second offloaded link and sends the stream to both sinks.
 static bool sharing_offload_probe_sent = false;
 
+// Qualcomm's own offload start, as Qualcomm's stack sends it (CAF bta_av_offload_req,
+// bta_av_vendor_offload_start), with the TWS+ fields from
+// persist.bluetooth.a2dp_sharing.offload_probe.split_acl (default 1) and .ch_mode
+// (default 0; CAF: None 0, Left 1, Right 2).
+static constexpr uint16_t kQtiA2dpOpcode = 0x000A | HCI_GRP_VENDOR_SPECIFIC;
+static constexpr uint8_t kQtiA2dpOffloadStart = 0x0A;
+
+static uint8_t* bta_av_put_qti_offload_start(uint8_t* p_param, tBTA_AV_SCB* p_scb,
+                                             const tBT_A2DP_OFFLOAD& offload_start) {
+  uint8_t codec_type;
+  switch (A2DP_SourceCodecIndex(p_scb->cfg.codec_info)) {
+    case BTAV_A2DP_CODEC_INDEX_SOURCE_AAC: codec_type = 2; break;
+    case BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC: codec_type = 4; break;
+    case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX: codec_type = 8; break;
+    case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_HD: codec_type = 9; break;
+    case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE: codec_type = 10; break;
+    default: codec_type = 0; break;  // SBC
+  }
+  uint16_t sample_rate;
+  switch (A2DP_GetTrackSampleRate(p_scb->cfg.codec_info)) {
+    case 48000: sample_rate = 0x02; break;
+    case 88200: sample_rate = 0x04; break;
+    case 96000: sample_rate = 0x08; break;
+    default: sample_rate = 0x01; break;  // 44.1 kHz
+  }
+  *p_param++ = kQtiA2dpOffloadStart;
+  UINT8_TO_STREAM(p_param, codec_type);
+  UINT8_TO_STREAM(p_param, 0);  // transport_type: SLIMBUS
+  UINT8_TO_STREAM(p_param, codec_type);  // stream_type
+  UINT8_TO_STREAM(p_param, 0);  // dev_index
+  UINT8_TO_STREAM(p_param, 0);  // max_latency
+  UINT8_TO_STREAM(p_param, 0);  // delay_reporting
+  UINT8_TO_STREAM(p_param, offload_start.scms_t_enable[0]);  // cp_active
+  UINT8_TO_STREAM(p_param, offload_start.scms_t_enable[1]);  // cp_flag
+  UINT16_TO_STREAM(p_param, sample_rate);
+  UINT16_TO_STREAM(p_param, offload_start.acl_hdl);
+  UINT16_TO_STREAM(p_param, offload_start.l2c_rcid);
+  UINT16_TO_STREAM(p_param, offload_start.mtu + AVDT_MEDIA_HDR_SIZE);
+  UINT8_TO_STREAM(p_param, 1);  // stream_start
+  UINT8_TO_STREAM(p_param, osi_property_get_int32(
+                                   "persist.bluetooth.a2dp_sharing.offload_probe.split_acl", 1));
+  UINT8_TO_STREAM(p_param, osi_property_get_int32(
+                                   "persist.bluetooth.a2dp_sharing.offload_probe.ch_mode", 0));
+  UINT16_TO_STREAM(p_param, 150);  // ttp
+  ARRAY_TO_STREAM(p_param, p_scb->cfg.codec_info, AVDT_CODEC_SIZE);
+  return p_param;
+}
+
 static void sharing_offload_probe_callback(tBTM_VSC_CMPL* param) {
-  log::info("sharing offload probe: controller status {:#x} ({} bytes)",
+  log::info("sharing offload probe: opcode {:#x} controller status {:#x} ({} bytes)", param->opcode,
             param->param_len ? param->p_param_buf[0] : 0xff, param->param_len);
 }
 
@@ -3240,14 +3288,19 @@ void bta_av_sharing_offload_probe(void) {
   }
   tBT_A2DP_OFFLOAD offload_start = {};
   bta_av_offload_codec_builder(p_scb, &offload_start);
-  uint8_t param[sizeof(tBT_A2DP_OFFLOAD) + 1];
-  uint8_t* p_param = bta_av_put_offload_start(param, &offload_start);
-  log::info("sharing offload probe: offload start for {} codec {:#x} ACL {:#x} L2CAP {:#x} MTU {:#x}",
-            p_scb->PeerAddress(), offload_start.codec_type, offload_start.acl_hdl,
-            offload_start.l2c_rcid, offload_start.mtu);
+  char mode[PROPERTY_VALUE_MAX] = {};
+  osi_property_get("persist.bluetooth.a2dp_sharing.offload_probe", mode, "");
+  bool qti = strcmp(mode, "qti") == 0;
+  uint8_t param[sizeof(tBT_A2DP_OFFLOAD) + AVDT_CODEC_SIZE + 32];
+  uint8_t* p_param = qti ? bta_av_put_qti_offload_start(param, p_scb, offload_start)
+                         : bta_av_put_offload_start(param, &offload_start);
+  log::info("sharing offload probe ({}): offload start for {} codec {:#x} ACL {:#x} L2CAP {:#x} MTU {:#x}",
+            qti ? "qti" : "aosp", p_scb->PeerAddress(), offload_start.codec_type,
+            offload_start.acl_hdl, offload_start.l2c_rcid, offload_start.mtu);
   sharing_offload_probe_sent = true;
   get_btm_client_interface().vendor.BTM_VendorSpecificCommand(
-          HCI_CONTROLLER_A2DP, p_param - param, param, sharing_offload_probe_callback);
+          qti ? kQtiA2dpOpcode : HCI_CONTROLLER_A2DP, p_param - param, param,
+          sharing_offload_probe_callback);
 }
 
 void bta_av_vendor_offload_stop() {
