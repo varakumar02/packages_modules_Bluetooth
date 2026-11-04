@@ -45,7 +45,7 @@ bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& bd_addr) {
 // Read by the audio HAL interface (setup_codec: software session) and by AudioService
 // (BtHelper.getCodec: route to the software Bluetooth module) while sharing is on.
 static void set_sharing_active_prop(bool active) {
-    osi_property_set("bluetooth.a2dp_sharing.active", active ? "1" : "0");
+    osi_property_set("bluetooth.a2dp_sharing.active", active ? "true" : "false");
 }
 
 bool btif_a2dp_sharing_offload_probe(void) {
