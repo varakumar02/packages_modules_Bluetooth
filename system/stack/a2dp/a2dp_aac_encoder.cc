@@ -328,9 +328,9 @@ static void a2dp_aac_encoder_update(A2dpCodecConfig* a2dp_codec_config, bool* p_
 
   // Set the encoder's parameters: Variable Bit Rate Support
   aac_param_value = A2DP_GetVariableBitRateSupportAac(p_codec_info);
-  if (peer_params.max_bitrate != 0 && aac_param_value == A2DP_AAC_VARIABLE_BIT_RATE_ENABLED) {
-    // Shared stream: CBR, which every AAC sink accepts whatever it negotiated
-    log::info("AAC shared with another sink, using CBR");
+  if (peer_params.shared_cbr && aac_param_value == A2DP_AAC_VARIABLE_BIT_RATE_ENABLED) {
+    // Shared stream: VBR only if every sink negotiated it
+    log::info("AAC shared with a sink without VBR, using CBR");
     aac_param_value = A2DP_AAC_VARIABLE_BIT_RATE_DISABLED;
   }
   if (aac_param_value == -1) {
