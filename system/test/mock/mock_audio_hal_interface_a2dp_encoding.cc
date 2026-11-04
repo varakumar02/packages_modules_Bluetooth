@@ -160,6 +160,10 @@ void set_audio_low_latency_mode_allowed(bool allowed) {
   inc_func_call_count(__func__);
   test::mock::audio_hal_interface_a2dp_encoding::set_audio_low_latency_mode_allowed(allowed);
 }
+bool set_aptx_mode(uint16_t /* aptx_mode */) {
+  inc_func_call_count(__func__);
+  return false;
+}
 void set_remote_delay(uint16_t delay_report) {
   inc_func_call_count(__func__);
   test::mock::audio_hal_interface_a2dp_encoding::set_remote_delay(delay_report);

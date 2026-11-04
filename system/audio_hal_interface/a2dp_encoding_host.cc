@@ -308,6 +308,8 @@ void end_session() {
 
 void set_audio_low_latency_mode_allowed(bool /*allowed*/) {}
 
+bool set_aptx_mode(uint16_t /*aptx_mode*/) { return false; }
+
 void ack_stream_started(Status /*ack*/) {
   a2dp_pending_cmd_ = A2DP_CTRL_CMD_NONE;
   // TODO: Notify server
