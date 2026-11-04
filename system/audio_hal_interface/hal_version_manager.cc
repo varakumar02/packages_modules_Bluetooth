@@ -21,9 +21,11 @@
 #include <bluetooth/log.h>
 #include <hidl/ServiceManagement.h>
 
+#include <chrono>
 #include <memory>
 #include <mutex>
 #include <string>
+#include <thread>
 
 #include "aidl/audio_aidl_interfaces.h"
 
@@ -139,6 +141,22 @@ android::sp<IBluetoothAudioProvidersFactory_2_0> HalVersionManager::GetProviders
 
 HalVersionManager::HalVersionManager() {
   hal_transport_ = BluetoothAudioHalTransport::UNKNOWN;
+  // A declared AIDL HAL can be between instances (audio HAL restarting with audioserver):
+  // wait up to 5 s for it rather than reading it as absent for the life of the process.
+  if (AServiceManager_isDeclared(kDefaultAudioProviderFactoryInterface.c_str())) {
+    for (int i = 0; i < 50; i++) {
+      ::ndk::SpAIBinder binder(
+              AServiceManager_checkService(kDefaultAudioProviderFactoryInterface.c_str()));
+      if (binder.get() != nullptr) {
+        break;
+      }
+      if (i == 0) {
+        log::warn("{} is declared but not registered yet, waiting",
+                  kDefaultAudioProviderFactoryInterface);
+      }
+      std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+  }
   if (AServiceManager_checkService(kDefaultAudioProviderFactoryInterface.c_str()) != nullptr) {
     hal_version_ = GetAidlInterfaceVersion();
     hal_transport_ = BluetoothAudioHalTransport::AIDL;
