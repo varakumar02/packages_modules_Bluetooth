@@ -48,10 +48,13 @@
 #include "btif/include/btif_a2dp_source.h"
 #include "btif/include/btif_av.h"
 #include "btif/include/btif_av_co.h"
+#include "btif/include/btif_storage.h"
 #include "device/include/device_iot_conf_defs.h"
 #include "device/include/device_iot_config.h"
+#include "device/include/interop.h"
 #include "include/hardware/bt_av.h"
 #include "osi/include/allocator.h"
+#include "stack/include/a2dp_aac_constants.h"
 #include "stack/include/a2dp_codec_api.h"
 #include "stack/include/a2dp_constants.h"
 #include "stack/include/a2dp_ext.h"
@@ -240,8 +243,22 @@ tA2DP_STATUS BtaAvCo::ProcessSourceGetConfig(tBTA_AV_HNDL bta_av_handle,
   auto codec_index = A2DP_SourceCodecIndex(p_codec_info);
   bool is_offloaded_codec = ::bluetooth::audio::a2dp::provider::supports_codec(codec_index);
 
+  // Sinks known to fail on AAC, or on AAC VBR (interop_database.conf).
+  bool disable_aac = false;
+  bool disable_aac_vbr = false;
+  if (codec_index == BTAV_A2DP_CODEC_INDEX_SOURCE_AAC) {
+    disable_aac = interop_match_addr_or_name(INTEROP_DISABLE_AAC_CODEC, &p_peer->addr,
+                                             &btif_storage_get_remote_device_property);
+    if (disable_aac) {
+      log::info("peer {} : AAC disabled by interop", p_peer->addr);
+    } else {
+      disable_aac_vbr = interop_match_addr_or_name(INTEROP_DISABLE_AAC_VBR_CODEC, &p_peer->addr,
+                                                   &btif_storage_get_remote_device_property);
+    }
+  }
+
   // Check the peer's Sink codec
-  if (is_offloaded_codec || A2DP_IsPeerSinkCodecValid(p_codec_info)) {
+  if (!disable_aac && (is_offloaded_codec || A2DP_IsPeerSinkCodecValid(p_codec_info))) {
     // If there is room for a new one
     if (p_peer->num_sup_sinks < BTA_AV_CO_NUM_ELEMENTS(p_peer->sinks)) {
       BtaAvCoSep* p_sink = &p_peer->sinks[p_peer->num_sup_sinks++];
@@ -250,6 +267,10 @@ tA2DP_STATUS BtaAvCo::ProcessSourceGetConfig(tBTA_AV_HNDL bta_av_handle,
                    p_codec_info[3], p_codec_info[4], p_codec_info[5], p_codec_info[6]);
 
       memcpy(p_sink->codec_caps, p_codec_info, AVDT_CODEC_SIZE);
+      if (disable_aac_vbr) {
+        log::info("peer {} : AAC VBR disabled by interop", p_peer->addr);
+        p_sink->codec_caps[A2DP_AAC_VARIABLE_BIT_RATE_IDX] &= ~A2DP_AAC_VARIABLE_BIT_RATE_MASK;
+      }
       p_sink->sep_info_idx = *p_sep_info_idx;
       p_sink->seid = seid;
       p_sink->num_protect = *p_num_protect;
