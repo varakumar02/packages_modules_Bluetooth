@@ -97,6 +97,10 @@ public class OplusA2dpSharingService extends Service {
     private Runnable mTeardownFallbackRunnable = null;
     // Rolls back a start whose native STARTED never came; cancelled once it came or sharing stopped
     private Runnable mEnterTimeoutRunnable = null;
+    // No active A2DP device while sharing (phone speaker or another output picked): stop sharing
+    // unless a headset comes back as the active device within this time
+    private static final long NO_ACTIVE_DEVICE_TEARDOWN_MS = 1500;
+    private final Runnable mNoActiveDeviceRunnable = this::onNoActiveDevice;
 
     private static class DeviceCodecSnapshot {
         final int optionalCodecsPreference;
@@ -158,6 +162,10 @@ public class OplusA2dpSharingService extends Service {
                     BluetoothDevice activeDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     boolean shouldTeardown = false;
                     BluetoothDevice newSecondary = null;
+                    mHandler.removeCallbacks(mNoActiveDeviceRunnable);
+                    if (activeDevice == null) {
+                        mHandler.postDelayed(mNoActiveDeviceRunnable, NO_ACTIVE_DEVICE_TEARDOWN_MS);
+                    }
                     synchronized (mLock) {
                         if (mInSharingMode && activeDevice != null && activeDevice.equals(mSecondaryDevice)) {
                             // The sharing peer became the active device (output switcher, role swap):
@@ -171,9 +179,8 @@ public class OplusA2dpSharingService extends Service {
                             Log.i(TAG, "Active A2DP device switched to the sharing peer " + activeDevice
                                     + ", sharing peer is now " + newSecondary);
                         } else if (mInSharingMode || mStarting) {
-                            // Do not tear down if activeDevice is null (e.g. playback paused or app switched)
-                            // or if activeDevice is still one of our sharing peers. Only tear down if switched
-                            // to a completely different 3rd party device.
+                            // A null activeDevice is handled by onNoActiveDevice; tear down at once only
+                            // when another A2DP device became active.
                             if (activeDevice != null && !activeDevice.equals(mPrimaryDevice) && !activeDevice.equals(mSecondaryDevice)) {
                                 shouldTeardown = true;
                                 Log.i(TAG, "Active A2DP device switched to 3rd party device " + activeDevice
@@ -878,6 +885,22 @@ public class OplusA2dpSharingService extends Service {
             Log.i(TAG, "restoreDeviceCodec: restored saved codec for " + device);
         } catch (Exception e) {
             Log.e(TAG, "Failed to restore codec on " + device, e);
+        }
+    }
+
+    private void onNoActiveDevice() {
+        AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+        A2dpService a2dpService = adapterService == null ? null
+                : (A2dpService) adapterService.getA2dpService().orElse(null);
+        if (a2dpService != null && a2dpService.getActiveDevice() != null) return;
+        boolean sharing;
+        synchronized (mLock) {
+            sharing = mInSharingMode || mStarting;
+        }
+        if (sharing) {
+            Log.i(TAG, "No active A2DP device for " + NO_ACTIVE_DEVICE_TEARDOWN_MS
+                    + " ms (audio left the headsets), triggering teardown");
+            teardown("no_active_device", true);
         }
     }
 
