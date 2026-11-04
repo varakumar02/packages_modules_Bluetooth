@@ -1062,6 +1062,18 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
       continue;
     }
 
+    // Sharing diagnostics, every ~250 copies (~5 s): each sink's host queue and L2CAP backlog, to
+    // see a sink lagging on the host side
+    if (btif_a2dp_sharing_is_active()) {
+      static uint32_t copies = 0;
+      if (++copies % 250 == 0) {
+        log::info("sharing queues: source {} list {} l2c {}, copy {} list {} l2c {}, hold {} ms",
+                  p_scb->PeerAddress(), list_length(p_scb->a2dp_list), p_scb->l2c_bufs,
+                  p_scbi->PeerAddress(), list_length(p_scbi->a2dp_list), p_scbi->l2c_bufs,
+                  btif_a2dp_sharing_hold_ms());
+      }
+    }
+
     /* Enqueue the data */
     BT_HDR* p_new = (BT_HDR*)osi_malloc(copy_size);
     memcpy(p_new, p_buf, copy_size);
