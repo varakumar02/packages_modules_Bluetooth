@@ -16,6 +16,8 @@
 
 #include "a2dp_encoding.h"
 
+#include <bluetooth/log.h>
+
 #include <vector>
 
 #include "aidl/a2dp/a2dp_encoding_aidl.h"
@@ -44,6 +46,16 @@ bool qti_wanted() {
 
 // The QTI provider was opened by init()
 bool use_qti() { return qti::a2dp::is_hal_enabled(); }
+
+// Next to the QTI offload session, the AOSP software session (A2DP_SOFTWARE_ENCODING_DATAPATH),
+// which the software Bluetooth audio module of the audio HAL reads. The stream moves to it while
+// A2DP is shared with a second sink (bluetooth.a2dp_sharing.active, set by btif_a2dp_sharing):
+// the stack encodes then, and audio policy routes the sink to that module.
+bool aidl_software_ready = false;
+bool software_active = false;
+
+// QTI is in use and the stream is on the AOSP software session
+bool use_software() { return use_qti() && software_active; }
 
 }  // namespace
 
@@ -105,7 +117,7 @@ bool is_hal_enabled() {
 // Check if new bluetooth_audio is running with offloading encoders
 bool is_hal_offloading() {
   if (use_qti()) {
-    return qti::a2dp::is_hal_offloading();
+    return !software_active && qti::a2dp::is_hal_offloading();
   }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::is_hal_2_0_offloading();
@@ -117,6 +129,11 @@ bool is_hal_offloading() {
 bool init(bluetooth::common::MessageLoopThread* message_loop,
           bluetooth::audio::a2dp::StreamCallbacks const* stream_callbacks, bool offload_enabled) {
   if (qti_wanted() && qti::a2dp::init(message_loop, stream_callbacks, offload_enabled)) {
+    software_active = false;
+    aidl_software_ready = HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::AIDL &&
+                          aidl::a2dp::init(message_loop, stream_callbacks, false);
+    log::info("AIDL software session for A2DP sharing {}",
+              aidl_software_ready ? "ready" : "unavailable");
     return true;
   }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
@@ -129,6 +146,11 @@ bool init(bluetooth::common::MessageLoopThread* message_loop,
 void cleanup() {
   if (use_qti()) {
     qti::a2dp::cleanup();
+    if (aidl_software_ready) {
+      aidl::a2dp::cleanup();
+      aidl_software_ready = false;
+    }
+    software_active = false;
     return;
   }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
@@ -141,7 +163,19 @@ void cleanup() {
 // Set up the codec into BluetoothAudio HAL
 bool setup_codec(const ahal_codec_configuration& config) {
   if (use_qti()) {
-    return qti::a2dp::setup_codec(config);
+    bool software = aidl_software_ready &&
+                    osi_property_get_bool("bluetooth.a2dp_sharing.active", false);
+    if (software != software_active) {
+      log::info("A2DP sharing {}: switching to the {} session", software ? "on" : "off",
+                software ? "AIDL software" : "QTI offload");
+      if (software_active) {
+        aidl::a2dp::end_session();
+      } else {
+        qti::a2dp::end_session();
+      }
+      software_active = software;
+    }
+    return software_active ? aidl::a2dp::setup_codec(config) : qti::a2dp::setup_codec(config);
   }
   if (HalVersionManager::GetHalTransport() == BluetoothAudioHalTransport::HIDL) {
     return hidl::a2dp::setup_codec(config);
@@ -152,6 +186,10 @@ bool setup_codec(const ahal_codec_configuration& config) {
 // Send command to the BluetoothAudio HAL: StartSession, EndSession,
 // StreamStarted, StreamSuspended
 void start_session() {
+  if (use_software()) {
+    aidl::a2dp::start_session();
+    return;
+  }
   if (use_qti()) {
     qti::a2dp::start_session();
     return;
@@ -164,6 +202,10 @@ void start_session() {
 }
 
 void end_session() {
+  if (use_software()) {
+    aidl::a2dp::end_session();
+    return;
+  }
   if (use_qti()) {
     qti::a2dp::end_session();
     return;
@@ -178,6 +220,10 @@ void end_session() {
 }
 
 void ack_stream_started(Status status) {
+  if (use_software()) {
+    aidl::a2dp::ack_stream_started(status);
+    return;
+  }
   if (use_qti()) {
     qti::a2dp::ack_stream_started(status);
     return;
@@ -190,6 +236,10 @@ void ack_stream_started(Status status) {
 }
 
 void ack_stream_suspended(Status status) {
+  if (use_software()) {
+    aidl::a2dp::ack_stream_suspended(status);
+    return;
+  }
   if (use_qti()) {
     qti::a2dp::ack_stream_suspended(status);
     return;
@@ -203,6 +253,9 @@ void ack_stream_suspended(Status status) {
 
 // Read from the FMQ of BluetoothAudio HAL
 size_t read(uint8_t* p_buf, uint32_t len) {
+  if (use_software()) {
+    return aidl::a2dp::read(p_buf, len);
+  }
   if (use_qti()) {
     return qti::a2dp::read(p_buf, len);
   }
