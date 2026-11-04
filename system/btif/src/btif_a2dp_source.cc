@@ -529,6 +529,19 @@ bool btif_a2dp_source_restart_session(const RawAddress& old_peer_address,
   return true;
 }
 
+void btif_a2dp_source_reinit_encoder(const RawAddress& peer_address,
+                                     std::promise<void> peer_ready_promise) {
+  log::info("peer_address={} state={}", peer_address, btif_a2dp_source_cb.StateStr());
+
+  // Runs on the thread of the encoding timer, so no encode is in flight.
+  btif_a2dp_source_thread.DoInThread(base::BindOnce(
+          [](const RawAddress& peer_address, std::promise<void> peer_ready_promise) {
+            btif_a2dp_source_setup_codec(peer_address);
+            peer_ready_promise.set_value();
+          },
+          peer_address, std::move(peer_ready_promise)));
+}
+
 bool btif_a2dp_source_end_session(const RawAddress& peer_address) {
   log::info("peer_address={} state={}", peer_address, btif_a2dp_source_cb.StateStr());
 
