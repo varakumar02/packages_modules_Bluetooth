@@ -795,6 +795,18 @@ bool BtaAvCo::SetCodecUserConfig(const RawAddress& peer_address,
     goto done;
   }
 
+  // aptX Adaptive LL/HQ request: the mode bits of codec_specific_4 only switch the encoder mode,
+  // without a codec reconfiguration (as Qualcomm's bta_av_co_set_codec_user_config does)
+  if (codec_user_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE &&
+      (codec_user_config.codec_specific_4 & 0x3000) != 0) {
+    A2dpCodecConfig* current_codec = p_peer->GetCodecs()->getCurrentCodecConfig();
+    if (current_codec != nullptr &&
+        current_codec->codecIndex() == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE &&
+        bluetooth::audio::a2dp::set_aptx_mode(codec_user_config.codec_specific_4 & 0x3000)) {
+      goto done;
+    }
+  }
+
   // Find the peer SEP codec to use
   if (codec_user_config.codec_type < BTAV_A2DP_CODEC_INDEX_MAX) {
     p_sink = peer_cache_->FindPeerSink(p_peer, codec_user_config.codec_type, ContentProtectFlag());

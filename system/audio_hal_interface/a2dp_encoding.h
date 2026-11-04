@@ -91,6 +91,10 @@ bool setup_codec(const ahal_codec_configuration& config);
 // Set low latency buffer mode allowed or disallowed
 void set_audio_low_latency_mode_allowed(bool allowed);
 
+// aptX Adaptive encoder mode (HQ 0x1000, LL 0x2000) requested by the framework; false when the
+// HAL in use has no aptX Adaptive mode control
+bool set_aptx_mode(uint16_t aptx_mode);
+
 // Send command to the BluetoothAudio HAL: StartSession, EndSession,
 // StreamStarted, StreamSuspended
 void start_session();

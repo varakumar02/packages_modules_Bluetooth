@@ -118,7 +118,13 @@ class A2dpCodecConfig {
         // Check whether the codecConfig would change current codec config.
         int prioritizedCodecType = getPrioritizedCodecType(newCodecConfig, selectableCodecs);
         BluetoothCodecConfig currentCodecConfig = codecStatus.getCodecConfig();
-        if (prioritizedCodecType == currentCodecConfig.getCodecType()
+        // An aptX Adaptive LL/HQ request only carries the mode bits of codec_specific_4; native
+        // switches the encoder mode without reconfiguring the codec.
+        boolean aptxAdaptiveModeRequest =
+                newCodecConfig.getCodecType() == APTX_ADAPTIVE_CODEC_TYPE.getNativeCodecType()
+                        && (newCodecConfig.getCodecSpecific4() & 0x3000) != 0;
+        if (!aptxAdaptiveModeRequest
+                && prioritizedCodecType == currentCodecConfig.getCodecType()
                 && (prioritizedCodecType != newCodecConfig.getCodecType()
                         || (currentCodecConfig.similarCodecFeedingParameters(newCodecConfig)
                                 && currentCodecConfig.sameCodecSpecificParameters(

@@ -231,6 +231,14 @@ void set_audio_low_latency_mode_allowed(bool allowed) {
   }
 }
 
+bool set_aptx_mode(uint16_t aptx_mode) {
+  if (!use_qti()) {
+    return false;
+  }
+  qti::a2dp::set_aptx_mode(aptx_mode);
+  return true;
+}
+
 // Check if OPUS codec is supported
 bool is_opus_supported() {
   // OPUS codec was added after HIDL HAL was frozen
