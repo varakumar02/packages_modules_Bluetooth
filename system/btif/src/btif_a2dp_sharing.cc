@@ -19,6 +19,8 @@
 #include <future>
 #include <thread>
 #include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <base/functional/bind.h>
 #include "osi/include/properties.h"
@@ -57,36 +59,60 @@ bool btif_a2dp_sharing_offload_probe(void) {
     return mode[0] != '\0' && strcmp(mode, "false") != 0 && strcmp(mode, "0") != 0;
 }
 
-// Lip sync (persist.bluetooth.a2dp_sharing.lipsync): the sharing sink's packets are held so both
-// sinks play together. auto (default): the active sink's AVDTP delay report minus the sharing
-// sink's; manual: persist.bluetooth.a2dp_sharing.delay_ms; off: 0. Read per packet by bta_av, so
-// it is computed on the encoder tick and on sharing enter/exit, and published for DeviceSettings
-// as bluetooth.a2dp_sharing.hold_ms.
-// ponytail: only the sharing sink can be held; when it is the later one, auto holds nothing and
-// only the reported A/V sync delay covers it (swap roles to fix the headset gap)
+// Lip sync (persist.bluetooth.a2dp_sharing.lipsync): the earlier sink's packets are held so both
+// sinks play together. Each sink's latency is its AVDTP delay report (auto, the default; manual
+// leaves it out) plus a per-headset adjustment in ms, persist.bluetooth.a2dp_sharing.adj.<ADDR>
+// (address without colons, set in DeviceSettings: headsets often report a fixed 150 ms whatever
+// their real latency). off: no hold. The signed hold is the active sink's latency minus the
+// sharing sink's: > 0 holds the sharing sink, < 0 the active one. Read per packet by bta_av, so it
+// is computed on the encoder tick and on sharing enter/exit, and published for DeviceSettings as
+// bluetooth.a2dp_sharing.hold_ms.
 static std::atomic<int> s_hold_ms{0};
+// Audio delay (1/10 ms) for A/V sync while sharing: the later sink's latency after the hold
+static std::atomic<int> s_audio_delay{0};
 
 int btif_a2dp_sharing_hold_ms(void) { return s_hold_ms.load(); }
 
+int btif_a2dp_sharing_audio_delay(void) { return s_audio_delay.load(); }
+
+static int latency_adjust_ms(const RawAddress& addr) {
+    char name[PROPERTY_VALUE_MAX] = {};
+    snprintf(name, sizeof(name), "persist.bluetooth.a2dp_sharing.adj.%02X%02X%02X%02X%02X%02X",
+             addr.address[0], addr.address[1], addr.address[2], addr.address[3], addr.address[4],
+             addr.address[5]);
+    return std::clamp(osi_property_get_int32(name, 0), 0, 500);
+}
+
 bool btif_a2dp_sharing_update_hold(void) {
     int hold = 0;
+    int audio_delay = 0;
     RawAddress sharing = btif_a2dp_sharing_get_sharing_peer();
+    char mode[PROPERTY_VALUE_MAX] = {};
+    osi_property_get("persist.bluetooth.a2dp_sharing.lipsync", mode, "auto");
     if (!sharing.IsEmpty()) {
-        char mode[PROPERTY_VALUE_MAX] = {};
-        osi_property_get("persist.bluetooth.a2dp_sharing.lipsync", mode, "auto");
-        if (strcmp(mode, "manual") == 0) {
-            hold = osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0);
-        } else if (strcmp(mode, "off") != 0) {
-            hold = (btif_av_get_peer_delay_report(btif_av_source_active_peer()) -
-                    btif_av_get_peer_delay_report(sharing)) / 10;
+        RawAddress active = btif_av_source_active_peer();
+        int active_report = btif_av_get_peer_delay_report(active);
+        int sharing_report = btif_av_get_peer_delay_report(sharing);
+        int active_adjust = latency_adjust_ms(active);
+        int sharing_adjust = latency_adjust_ms(sharing);
+        // Latencies in 1/10 ms, as the delay reports
+        int active_latency = active_report + 10 * active_adjust;
+        int sharing_latency = sharing_report + 10 * sharing_adjust;
+        if (strcmp(mode, "off") != 0) {
+            hold = strcmp(mode, "manual") == 0 ? active_adjust - sharing_adjust
+                                               : (active_latency - sharing_latency) / 10;
+            hold = std::clamp(hold, -500, 500);
         }
-        hold = std::clamp(hold, 0, 500);
+        audio_delay = std::max(active_latency + 10 * std::max(0, -hold),
+                               sharing_latency + 10 * std::max(0, hold));
     }
+    bool changed = s_audio_delay.exchange(audio_delay) != audio_delay;
     if (s_hold_ms.exchange(hold) == hold) {
-        return false;
+        return changed;
     }
     osi_property_set("bluetooth.a2dp_sharing.hold_ms", std::to_string(hold).c_str());
-    log::info("btif_a2dp_sharing: lip sync holds the sharing sink {} ms", hold);
+    log::info("btif_a2dp_sharing: lip sync holds the {} sink {} ms", hold < 0 ? "active" : "sharing",
+              std::abs(hold));
     return true;
 }
 
@@ -126,6 +152,7 @@ static void cleanup(void) {
     set_sharing_active_prop(false);
     // Bluetooth off while sharing skips the exit, which resets the hold
     s_hold_ms = 0;
+    s_audio_delay = 0;
     osi_property_set("bluetooth.a2dp_sharing.hold_ms", "0");
 }
 

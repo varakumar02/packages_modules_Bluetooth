@@ -33,6 +33,7 @@
 #include <bluetooth/types/hci_role.h>
 #include <com_android_bluetooth_flags.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstring>
 #include <vector>
@@ -115,14 +116,26 @@ static bool bta_av_sharing_waits_for_copies(tBTA_AV_SCB* p_scb) {
   return false;
 }
 
-// Lip sync (btif_a2dp_sharing_hold_ms): the sharing peer's copied packets wait in its queue until
-// they span that much audio (by media timestamp, in samples), so the sharing sink plays that much
-// later than the active one.
+// Lip sync (btif_a2dp_sharing_hold_ms, signed): the earlier sink's packets wait in its queue
+// until they span that much audio (by media timestamp, in samples), so it plays that much later.
+// A positive hold is for the sharing sink, a negative one for the active sink.
+static int bta_av_sharing_hold_ms_for(tBTA_AV_SCB* p_scb) {
+  int hold = btif_a2dp_sharing_hold_ms();
+  return btif_a2dp_sharing_is_sharing_peer(p_scb->PeerAddress()) ? std::max(0, hold)
+                                                                 : std::max(0, -hold);
+}
+
+// The active sink is held: it queues the packets it pulls instead of sending them at once
+static bool bta_av_sharing_active_held(tBTA_AV_SCB* p_scb) {
+  return btif_a2dp_sharing_is_active() && btif_a2dp_sharing_hold_ms() < 0 &&
+         !btif_a2dp_sharing_is_sharing_peer(p_scb->PeerAddress());
+}
+
 static bool bta_av_sharing_hold(tBTA_AV_SCB* p_scb) {
-  if (!btif_a2dp_sharing_is_active() || !btif_a2dp_sharing_is_sharing_peer(p_scb->PeerAddress())) {
+  if (!btif_a2dp_sharing_is_active()) {
     return false;
   }
-  int delay_ms = btif_a2dp_sharing_hold_ms();
+  int delay_ms = bta_av_sharing_hold_ms_for(p_scb);
   int sample_rate = A2DP_GetTrackSampleRate(p_scb->cfg.codec_info);
   if (sample_rate <= 0) {
     return false;
@@ -132,7 +145,8 @@ static bool bta_av_sharing_hold(tBTA_AV_SCB* p_scb) {
 
   // A lowered hold leaves the old one queued, and the sink would stay that late: drop the
   // excess at once, down to the new hold plus 40 ms. Not congestion, so not counted as a drop.
-  static int last_delay_ms = 0;
+  static int last_hold_ms[BTA_AV_NUM_STRS] = {};
+  int& last_delay_ms = last_hold_ms[p_scb->hdi % BTA_AV_NUM_STRS];
   if (delay_ms < last_delay_ms) {
     uint64_t keep = static_cast<uint64_t>(delay_ms + 40) * static_cast<uint64_t>(sample_rate);
     size_t dropped = 0;
@@ -2200,7 +2214,22 @@ void bta_av_data_path(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* /* p_data */) {
   p_scb->l2c_bufs = (uint8_t)stack::l2cap::get_interface().L2CA_FlushChannel(p_scb->l2c_cid,
                                                                              L2CAP_FLUSH_CHANS_GET);
 
-  if (!list_is_empty(p_scb->a2dp_list)) {
+  if (bta_av_sharing_active_held(p_scb)) {
+    // Lip sync holds the active sink: it still pulls (and copies to the sharing sink) one packet
+    // per data-ready event, and sends from its own queue once the hold is reached
+    BT_HDR* p_new = p_scb->p_cos->data(p_scb->cfg.codec_info, &timestamp);
+    if (p_new != nullptr) {
+      *reinterpret_cast<uint32_t*>(p_new + 1) = timestamp;
+      bta_av_dup_audio_buf(p_scb, p_new);
+      list_append(p_scb->a2dp_list, p_new);
+    }
+    if (list_is_empty(p_scb->a2dp_list) || bta_av_sharing_hold(p_scb)) {
+      return;
+    }
+    p_buf = reinterpret_cast<BT_HDR*>(list_front(p_scb->a2dp_list));
+    list_remove(p_scb->a2dp_list, p_buf);
+    timestamp = *reinterpret_cast<uint32_t*>(p_buf + 1);
+  } else if (!list_is_empty(p_scb->a2dp_list)) {
     if (bta_av_sharing_hold(p_scb)) {
       return;
     }
@@ -2292,11 +2321,8 @@ void bta_av_data_path(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* /* p_data */) {
         list_append(p_scb->a2dp_list, p_buf);
       } else {
         /* just dequeue it from the a2dp_list */
-        // The sharing sink's queue also holds the sync adjust delay
-        const size_t max_queued =
-                !btif_a2dp_sharing_is_active()                          ? 3
-                : btif_a2dp_sharing_is_sharing_peer(p_scb->PeerAddress()) ? bta_av_sharing_queue_cap()
-                                                                          : 6;
+        // While sharing, the held sink's queue also holds the lip sync delay
+        const size_t max_queued = btif_a2dp_sharing_is_active() ? bta_av_sharing_queue_cap() : 3;
         if (list_length(p_scb->a2dp_list) < max_queued) {
           /* put it back to the queue */
           list_prepend(p_scb->a2dp_list, p_buf);
