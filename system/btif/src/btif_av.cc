@@ -2314,6 +2314,7 @@ bool BtifAvStateMachine::StateOpened::ProcessEvent(uint32_t event, void* p_data)
             // Secondary sharing peer joins the active stream without double-acking to the audio HAL
             log::info("Peer {} : secondary sharing peer stream started", peer_.PeerAddress());
             peer_.ClearFlags(BtifAvPeer::kFlagPendingStart);
+            bta_av_sharing_offload_probe();
           }
         }
       }
@@ -4123,14 +4124,14 @@ uint16_t btif_av_get_audio_delay(const A2dpType local_a2dp_type) {
 }
 
 bool btif_av_is_a2dp_offload_enabled() {
-  if (btif_a2dp_sharing_is_active()) {
+  if (btif_a2dp_sharing_is_active() && !btif_a2dp_sharing_offload_probe()) {
     return false;
   }
   return btif_av_source.A2dpOffloadEnabled();
 }
 
 bool btif_av_is_a2dp_offload_running() {
-  if (btif_a2dp_sharing_is_active()) {
+  if (btif_a2dp_sharing_is_active() && !btif_a2dp_sharing_offload_probe()) {
     return false;
   }
   if (!btif_av_is_a2dp_offload_enabled()) {
