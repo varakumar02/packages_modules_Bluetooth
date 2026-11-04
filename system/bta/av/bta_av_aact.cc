@@ -96,6 +96,25 @@ __attribute__((weak)) bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& /
 
 using namespace bluetooth;
 
+// While sharing, only the active sink pulls encoded packets (p_cos->data) and copies them to the
+// sharing sink's queue (bta_av_dup_audio_buf). Streams are served in SCB order, so a sharing sink
+// in a lower SCB slot would otherwise find its queue empty, pull the packet itself and feed the
+// active sink the copies, bypassing the lip sync hold below. It waits for the copies instead, as
+// long as another audio stream is started to make them.
+static bool bta_av_sharing_waits_for_copies(tBTA_AV_SCB* p_scb) {
+  if (!btif_a2dp_sharing_is_active() || !btif_a2dp_sharing_is_sharing_peer(p_scb->PeerAddress())) {
+    return false;
+  }
+  for (int i = 0; i < BTA_AV_NUM_STRS; i++) {
+    tBTA_AV_SCB* p_scbi = bta_av_cb.p_scb[i];
+    if (p_scbi != nullptr && p_scbi != p_scb && p_scbi->co_started &&
+        (bta_av_cb.conn_audio & BTA_AV_HNDL_TO_MSK(i))) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Lip sync (btif_a2dp_sharing_hold_ms): the sharing peer's copied packets wait in its queue until
 // they span that much audio (by media timestamp, in samples), so the sharing sink plays that much
 // later than the active one.
@@ -2190,6 +2209,9 @@ void bta_av_data_path(tBTA_AV_SCB* p_scb, tBTA_AV_DATA* /* p_data */) {
     /* use q_info.a2dp data, read the timestamp */
     timestamp = *reinterpret_cast<uint32_t*>(p_buf + 1);
   } else {
+    if (bta_av_sharing_waits_for_copies(p_scb)) {
+      return;
+    }
     new_buf = true;
     /* A2DP_list empty, call co_data, dup data to other channels */
     p_buf = p_scb->p_cos->data(p_scb->cfg.codec_info, &timestamp);
