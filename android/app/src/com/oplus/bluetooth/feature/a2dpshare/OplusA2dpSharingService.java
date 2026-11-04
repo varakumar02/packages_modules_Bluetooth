@@ -71,8 +71,9 @@ public class OplusA2dpSharingService extends Service {
         BluetoothCodecConfig.SOURCE_CODEC_TYPE_AAC,
         BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC,
     };
-    // LDAC 660 kbps (standard quality) per sink: two 990 kbps streams don't fit the air time
-    private static final long LDAC_SHARING_QUALITY = 1001L;
+    // LDAC adaptive bit rate per sink, kept at 660 kbps or below by the encoder while sharing
+    // (two 990 kbps streams don't fit the air time); steps down on congestion
+    private static final long LDAC_SHARING_QUALITY = 1003L;
     private static final ExecutorService sAsyncExecutor = Executors.newSingleThreadExecutor();
 
     private final RemoteCallbackList<IOplusA2dpSharingStateCallback> mStateCallbacks =
