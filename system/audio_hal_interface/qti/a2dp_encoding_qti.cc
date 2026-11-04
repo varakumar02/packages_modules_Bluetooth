@@ -17,15 +17,19 @@
 
 #include "a2dp_encoding_qti.h"
 
+#include <base/functional/bind.h>
 #include <bluetooth/log.h>
 #include <bluetooth/types/address.h>
 
+#include <atomic>
 #include <vector>
 
 #include "a2dp_sbc_constants.h"
 #include "client_interface_qti.h"
 #include "codec_status_qti.h"
 #include "osi/include/properties.h"
+#include "stack/include/btm_client_interface.h"
+#include "stack/include/main_thread.h"
 
 typedef enum {
   A2DP_CTRL_CMD_NONE,
@@ -157,6 +161,7 @@ public:
 
   void AptxModeChanged(uint16_t aptx_mode) override {
     log::info("aptX Adaptive mode 0x{:04x} requested by the audio HAL", aptx_mode);
+    set_aptx_mode(aptx_mode);
   }
 
   tA2DP_CTRL_CMD GetPendingCmd() const { return a2dp_pending_cmd_; }
@@ -197,6 +202,39 @@ BluetoothAudioSinkClientInterface* active_hal_interface = nullptr;
 // Save the value if the remote reports its delay before this interface is
 // initialized
 uint16_t remote_delay = 0;
+
+// aptX Adaptive encoder mode, as Qualcomm's stack keeps it (btif_av aptx_mode, btif_av.h APTX_*)
+constexpr uint16_t kAptxModeHq = 0x1000;
+constexpr uint16_t kAptxModeLl = 0x2000;
+constexpr uint16_t kAptxModeMask = 0x3000;
+std::atomic<uint16_t> aptx_mode{kAptxModeHq};
+
+// The offload session runs aptX Adaptive (set by setup_codec)
+bool aptx_adaptive_offload = false;
+
+// Qualcomm A2DP vendor command (bta_av_int.h HCI_VSQC_CONTROLLER_A2DP_OPCODE), sub-opcode
+// VS_QHCI_ENCODER_MODE_CHANGE with one BTA_AV_ENCODER_MODE_CHANGE_ID sub-band, as
+// bta_av_update_enc_mode() sends it
+constexpr uint16_t kVscA2dpOpcode = 0x000A;
+constexpr uint8_t kVscEncoderModeChange = 0x13;
+constexpr uint8_t kEncoderModeChangeId = 5;
+
+void aptx_mode_vsc_cb(tBTM_VSC_CMPL* p) {
+  log::info("aptX Adaptive mode change status=0x{:02x}",
+            p->param_len > 0 ? p->p_param_buf[0] : 0xff);
+}
+
+void send_aptx_mode(uint16_t mode) {
+  log::info("aptX Adaptive mode 0x{:04x} to the controller", mode);
+  uint8_t param[] = {kVscEncoderModeChange,
+                     1,  // number of sub-bands
+                     kEncoderModeChangeId,
+                     sizeof(mode),
+                     static_cast<uint8_t>(mode & 0xff),
+                     static_cast<uint8_t>(mode >> 8)};
+  get_btm_client_interface().vendor.BTM_VendorSpecificCommand(kVscA2dpOpcode, sizeof(param), param,
+                                                              aptx_mode_vsc_cb);
+}
 
 }  // namespace
 
@@ -315,6 +353,8 @@ bool setup_codec(const ::bluetooth::audio::a2dp::ahal_codec_configuration& confi
       end_session();
       active_hal_interface = offloading_hal_interface;
     }
+    aptx_adaptive_offload =
+            config.codec_config.codec_type == BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_ADAPTIVE;
 
     audio_config.codecConfig = codec_config;
     return active_hal_interface->UpdateAudioConfig(audio_config);
@@ -328,6 +368,7 @@ bool setup_codec(const ::bluetooth::audio::a2dp::ahal_codec_configuration& confi
       end_session();
       active_hal_interface = software_hal_interface;
     }
+    aptx_adaptive_offload = false;
     audio_config.pcmConfig = pcm_config;
     return active_hal_interface->UpdateAudioConfig(audio_config);
   }
@@ -368,6 +409,10 @@ void ack_stream_started(Status ack) {
   auto pending_cmd = a2dp_sink->GetPendingCmd();
   if (pending_cmd == A2DP_CTRL_CMD_START) {
     active_hal_interface->StreamStarted(a2dp_ack_to_bt_audio_ctrl_ack(ack));
+    // Qualcomm's stack sends the mode after every aptX Adaptive offload start
+    if (ack == Status::SUCCESS && aptx_adaptive_offload) {
+      send_aptx_mode(aptx_mode);
+    }
   } else {
     log::warn("pending={} ignore result={}", pending_cmd, ack);
     return;
@@ -424,6 +469,28 @@ void set_remote_delay(uint16_t delay_report) {
           ->SetRemoteDelay(delay_report);
   offloading_hal_interface->UpdateSinkLatency(delay_report);
 }
+
+void set_aptx_mode(uint16_t mode) {
+  mode &= kAptxModeMask;
+  if (mode != kAptxModeHq && mode != kAptxModeLl) {
+    log::warn("unsupported aptX Adaptive mode 0x{:04x}", mode);
+    return;
+  }
+  // HAL callbacks arrive on a binder thread, framework requests on the A2DP source thread
+  do_in_main_thread(base::BindOnce(
+          [](uint16_t mode) {
+            if (aptx_mode.exchange(mode) == mode) {
+              return;
+            }
+            log::info("aptX Adaptive mode 0x{:04x}", mode);
+            if (aptx_adaptive_offload) {
+              send_aptx_mode(mode);
+            }
+          },
+          mode));
+}
+
+uint16_t get_aptx_mode() { return aptx_mode; }
 
 }  // namespace a2dp
 }  // namespace qti
