@@ -62,6 +62,40 @@ __attribute__((weak)) bool btif_a2dp_sharing_is_sharing_peer(const RawAddress& /
   return false;
 }
 
+#include "btif/include/btif_av_co.h"
+#include "btif/include/btif_config.h"
+#include "btif/include/btif_storage.h"
+#include "btm_api_types.h"
+#include "common/message_loop_thread.h"
+#include "device/include/device_iot_conf_defs.h"
+#include "device/include/device_iot_config.h"
+#include "device/include/interop.h"
+#include "hardware/bt_av.h"
+#include "hci_error_code.h"
+#include "hcidefs.h"
+#include "internal_include/bt_target.h"
+#include "l2cap_types.h"
+#include "osi/include/alarm.h"
+#include "osi/include/allocator.h"
+#include "osi/include/list.h"
+#include "osi/include/osi.h"  // UINT_TO_PTR PTR_TO_UINT
+#include "osi/include/properties.h"
+#include "sdpdefs.h"
+#include "stack/include/a2dp_ext.h"
+#include "stack/include/a2dp_sbc.h"
+#include "stack/include/acl_api.h"
+#include "stack/include/bt_hdr.h"
+#include "stack/include/bt_types.h"
+#include "stack/include/bt_uuid16.h"
+#include "stack/include/btm_client_interface.h"
+#include "stack/include/btm_log_history.h"
+#include "stack/include/btm_status.h"
+#include "stack/include/l2cap_interface.h"
+#include "stack/include/l2cap_av_interface.h"
+#include "storage/config_keys.h"
+
+using namespace bluetooth;
+
 // Lip sync (btif_a2dp_sharing_hold_ms): the sharing peer's copied packets wait in its queue until
 // they span that much audio (by media timestamp, in samples), so the sharing sink plays that much
 // later than the active one.
@@ -107,40 +141,6 @@ static bool bta_av_sharing_hold(tBTA_AV_SCB* p_scb) {
   return static_cast<uint64_t>(tail - head) * 1000 <
          static_cast<uint64_t>(delay_ms) * static_cast<uint64_t>(sample_rate);
 }
-
-#include "btif/include/btif_av_co.h"
-#include "btif/include/btif_config.h"
-#include "btif/include/btif_storage.h"
-#include "btm_api_types.h"
-#include "common/message_loop_thread.h"
-#include "device/include/device_iot_conf_defs.h"
-#include "device/include/device_iot_config.h"
-#include "device/include/interop.h"
-#include "hardware/bt_av.h"
-#include "hci_error_code.h"
-#include "hcidefs.h"
-#include "internal_include/bt_target.h"
-#include "l2cap_types.h"
-#include "osi/include/alarm.h"
-#include "osi/include/allocator.h"
-#include "osi/include/list.h"
-#include "osi/include/osi.h"  // UINT_TO_PTR PTR_TO_UINT
-#include "osi/include/properties.h"
-#include "sdpdefs.h"
-#include "stack/include/a2dp_ext.h"
-#include "stack/include/a2dp_sbc.h"
-#include "stack/include/acl_api.h"
-#include "stack/include/bt_hdr.h"
-#include "stack/include/bt_types.h"
-#include "stack/include/bt_uuid16.h"
-#include "stack/include/btm_client_interface.h"
-#include "stack/include/btm_log_history.h"
-#include "stack/include/btm_status.h"
-#include "stack/include/l2cap_interface.h"
-#include "stack/include/l2cap_av_interface.h"
-#include "storage/config_keys.h"
-
-using namespace bluetooth;
 
 namespace {
 
