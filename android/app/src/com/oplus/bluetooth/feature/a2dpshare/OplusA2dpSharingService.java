@@ -673,14 +673,14 @@ public class OplusA2dpSharingService extends Service {
     }
 
     private static int codecTypeFromName(String name) {
-        switch (name) {
-            case "ldac": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC;
-            case "aptx_hd": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX_HD;
-            case "aptx": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX;
-            case "aac": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_AAC;
-            case "sbc": return BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC;
-            default: return -1;
-        }
+        return switch (name) {
+            case "ldac" -> BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC;
+            case "aptx_hd" -> BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX_HD;
+            case "aptx" -> BluetoothCodecConfig.SOURCE_CODEC_TYPE_APTX;
+            case "aac" -> BluetoothCodecConfig.SOURCE_CODEC_TYPE_AAC;
+            case "sbc" -> BluetoothCodecConfig.SOURCE_CODEC_TYPE_SBC;
+            default -> -1;
+        };
     }
 
     private static BluetoothCodecConfig findCapability(BluetoothCodecStatus status, int type) {
@@ -731,7 +731,7 @@ public class OplusA2dpSharingService extends Service {
                     .setBitsPerSample(bitsPerSample)
                     .setChannelMode(BluetoothCodecConfig.CHANNEL_MODE_STEREO)
                     .setCodecSpecific1(type == BluetoothCodecConfig.SOURCE_CODEC_TYPE_LDAC
-                            ? LDAC_SHARING_QUALITY : 0)
+                            ? LDAC_SHARING_QUALITY : 0L)
                     .build());
         }
         return candidates;
