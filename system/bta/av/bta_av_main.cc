@@ -1025,6 +1025,13 @@ uint32_t bta_av_sharing_drop_count(void) { return sharing_drop_count.load(); }
 
 void bta_av_sharing_count_drop(void) { sharing_drop_count++; }
 
+// Sync adjust (bta_av_sharing_hold) keeps delay_ms of audio queued for the sharing sink. LDAC
+// packets carry ~8 ms, so the queue is sized for 5 ms packets on top of the normal 6.
+size_t bta_av_sharing_queue_cap(void) {
+  return 6 + std::clamp(osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0), 0,
+                        500) / 5;
+}
+
 void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
   /* Test whether there is more than one audio channel connected */
   if ((p_buf == NULL) || (bta_av_cb.audio_open_cnt < 2)) {
@@ -1063,9 +1070,7 @@ void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
 
     uint16_t max_queue_size = p_bta_av_cfg->audio_mqs;
     if (btif_a2dp_sharing_is_active()) {
-      // Room for the sync adjust hold (bta_av_sharing_hold) on top, at 10 ms or more per packet
-      max_queue_size = 6 + std::clamp(
-              osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0) / 10, 0, 50);
+      max_queue_size = bta_av_sharing_queue_cap();
     }
 
     if (list_length(p_scbi->a2dp_list) > max_queue_size) {

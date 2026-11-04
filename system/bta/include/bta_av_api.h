@@ -28,6 +28,7 @@
 
 #include <bluetooth/types/address.h>
 
+#include <cstddef>
 #include <cstdint>
 
 #include "bta/include/bta_api.h"
@@ -751,5 +752,10 @@ void bta_av_sharing_offload_probe(void);
  */
 uint32_t bta_av_sharing_drop_count(void);
 void bta_av_sharing_count_drop(void);
+
+/**
+ * Packets the sharing sink's queue may hold while sharing, sync adjust hold included.
+ */
+size_t bta_av_sharing_queue_cap(void);
 
 #endif /* BTA_AV_API_H */
