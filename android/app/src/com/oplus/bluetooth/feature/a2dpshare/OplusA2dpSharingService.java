@@ -83,6 +83,8 @@ public class OplusA2dpSharingService extends Service {
     private final Object mLock = new Object();
     private BluetoothDevice mPrimaryDevice;
     private BluetoothDevice mSecondaryDevice;
+    // The codec config both peers were put on (sharingCodecCandidates)
+    private BluetoothCodecConfig mSharingCodec;
     private boolean mInSharingMode = false;
     private boolean mStarting = false;
     private boolean mMasterSwitchEnabled = false;
@@ -186,6 +188,24 @@ public class OplusA2dpSharingService extends Service {
                     } else if (newSecondary != null && mNativeInterface != null
                             && !mNativeInterface.enterSharing(newSecondary)) {
                         teardown("role_swap_failed", true);
+                    }
+                }
+                case BluetoothA2dp.ACTION_CODEC_CONFIG_CHANGED -> {
+                    BluetoothDevice device = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
+                    BluetoothCodecStatus status =
+                            intent.getParcelableExtra(BluetoothCodecStatus.EXTRA_CODEC_STATUS);
+                    boolean shouldTeardown;
+                    synchronized (mLock) {
+                        // A peer reconfigured to another codec (developer options, the headset)
+                        // can't decode the other one's packets any more
+                        shouldTeardown = mInSharingMode && mSharingCodec != null && status != null
+                                && (device != null && (device.equals(mPrimaryDevice)
+                                        || device.equals(mSecondaryDevice)))
+                                && !matchesSharingCodec(status.getCodecConfig(), mSharingCodec);
+                    }
+                    if (shouldTeardown) {
+                        Log.i(TAG, device + " left the sharing codec: " + status.getCodecConfig());
+                        teardown("codec_changed", true);
                     }
                 }
                 default -> { /* ignore unhandled broadcast */ }
@@ -368,6 +388,7 @@ public class OplusA2dpSharingService extends Service {
                                 && applySharingCodec(a2dpService, device, cfg)
                                 && waitForSharingCodec(a2dpService, primary, device, cfg, 1500)) {
                             configured = true;
+                            synchronized (mLock) { mSharingCodec = cfg; }
                             break;
                         }
                     }
@@ -562,6 +583,7 @@ public class OplusA2dpSharingService extends Service {
             filter.addAction(BluetoothAdapter.ACTION_STATE_CHANGED);
             filter.addAction(BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED);
             filter.addAction(BluetoothA2dp.ACTION_ACTIVE_DEVICE_CHANGED);
+            filter.addAction(BluetoothA2dp.ACTION_CODEC_CONFIG_CHANGED);
             registerReceiver(mReceiver, filter);
             mReceiverRegistered = true;
         } catch (Throwable t) {
