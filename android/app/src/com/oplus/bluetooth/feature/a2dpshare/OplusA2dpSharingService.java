@@ -152,8 +152,20 @@ public class OplusA2dpSharingService extends Service {
                 case BluetoothA2dp.ACTION_ACTIVE_DEVICE_CHANGED -> {
                     BluetoothDevice activeDevice = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE);
                     boolean shouldTeardown = false;
+                    BluetoothDevice newSecondary = null;
                     synchronized (mLock) {
-                        if (mInSharingMode || mStarting) {
+                        if (mInSharingMode && activeDevice != null && activeDevice.equals(mSecondaryDevice)) {
+                            // The sharing peer became the active device (output switcher, role swap):
+                            // the old primary is now the sharing peer, else the stack stops it for good
+                            newSecondary = mPrimaryDevice;
+                            mPrimaryDevice = activeDevice;
+                            mSecondaryDevice = newSecondary;
+                            boolean primaryAbsOff = mIsPrimaryAbsTurnedOffAgainstWill;
+                            mIsPrimaryAbsTurnedOffAgainstWill = mIsSecondaryAbsTurnedOffAgainstWill;
+                            mIsSecondaryAbsTurnedOffAgainstWill = primaryAbsOff;
+                            Log.i(TAG, "Active A2DP device switched to the sharing peer " + activeDevice
+                                    + ", sharing peer is now " + newSecondary);
+                        } else if (mInSharingMode || mStarting) {
                             // Do not tear down if activeDevice is null (e.g. playback paused or app switched)
                             // or if activeDevice is still one of our sharing peers. Only tear down if switched
                             // to a completely different 3rd party device.
@@ -171,6 +183,9 @@ public class OplusA2dpSharingService extends Service {
                     }
                     if (shouldTeardown) {
                         teardown("active_device_changed", true);
+                    } else if (newSecondary != null && mNativeInterface != null
+                            && !mNativeInterface.enterSharing(newSecondary)) {
+                        teardown("role_swap_failed", true);
                     }
                 }
                 default -> { /* ignore unhandled broadcast */ }
