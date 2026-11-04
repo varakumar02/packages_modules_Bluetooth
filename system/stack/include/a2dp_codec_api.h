@@ -51,6 +51,7 @@ typedef struct {
   bool peer_supports_3mbps;  // True if the A2DP peer supports 3 Mbps EDR
   uint16_t peer_mtu;         // MTU of the A2DP peer
   uint32_t max_bitrate;      // Lowest AAC bit rate of the sinks sharing this stream, 0 if none
+  bool shared_cbr;           // A sink sharing this stream negotiated AAC without VBR
 } tA2DP_ENCODER_INIT_PEER_PARAMS;
 
 class A2dpCodecConfig {
