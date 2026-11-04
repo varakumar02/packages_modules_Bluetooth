@@ -39,3 +39,7 @@ RawAddress btif_a2dp_sharing_get_sharing_peer(void);
 // persist.bluetooth.a2dp_sharing.offload_probe (aosp, true or qti): share with A2DP offload kept on (test)
 bool btif_a2dp_sharing_offload_probe(void);
 void btif_a2dp_sharing_on_peer_disconnected(const RawAddress& bd_addr);
+// Lip sync: how long the sharing sink's packets are held (ms, 0-500), see btif_a2dp_sharing.cc
+int btif_a2dp_sharing_hold_ms(void);
+// Recomputes the hold; true when it changed (the reported audio delay changes with it)
+bool btif_a2dp_sharing_update_hold(void);

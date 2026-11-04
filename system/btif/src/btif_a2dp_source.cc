@@ -58,7 +58,6 @@
 #include "hardware/bt_av.h"
 #include "osi/include/allocator.h"
 #include "osi/include/fixed_queue.h"
-#include "osi/include/properties.h"
 #include "osi/include/wakelock.h"
 #include "stack/include/a2dp_sbc_constants.h"
 #include "stack/include/acl_api.h"
@@ -955,17 +954,12 @@ static void btif_a2dp_source_audio_handle_timer(void) {
   ATRACE_INT("btif TX queue", tx_queue_len);
 #endif
 
-  // Sharing: the reported delay counts the sync adjust hold, so a new hold (DeviceSettings
-  // slider) goes to the audio HAL now rather than at the next delay report or share
-  if (btif_a2dp_sharing_is_active()) {
-    static int last_hold_ms = -1;
-    int hold_ms = osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0);
-    if (hold_ms != last_hold_ms) {
-      last_hold_ms = hold_ms;
-      do_in_main_thread(base::BindOnce([]() {
-        bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
-      }));
-    }
+  // Sharing: the reported delay counts the lip sync hold, so a new hold (DeviceSettings mode or
+  // slider, a new delay report) goes to the audio HAL now rather than at the next share
+  if (btif_a2dp_sharing_is_active() && btif_a2dp_sharing_update_hold()) {
+    do_in_main_thread(base::BindOnce([]() {
+      bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
+    }));
   }
 
   if (btif_a2dp_source_cb.encoder_interface->set_transmit_queue_length != nullptr) {

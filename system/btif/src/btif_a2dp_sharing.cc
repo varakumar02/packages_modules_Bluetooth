@@ -12,7 +12,10 @@
 #include "btif_common.h"
 
 #include <bluetooth/log.h>
+#include <algorithm>
+#include <atomic>
 #include <mutex>
+#include <string>
 #include <future>
 #include <thread>
 #include <chrono>
@@ -52,6 +55,39 @@ bool btif_a2dp_sharing_offload_probe(void) {
     char mode[PROPERTY_VALUE_MAX] = {};
     osi_property_get("persist.bluetooth.a2dp_sharing.offload_probe", mode, "");
     return mode[0] != '\0' && strcmp(mode, "false") != 0 && strcmp(mode, "0") != 0;
+}
+
+// Lip sync (persist.bluetooth.a2dp_sharing.lipsync): the sharing sink's packets are held so both
+// sinks play together. auto (default): the active sink's AVDTP delay report minus the sharing
+// sink's; manual: persist.bluetooth.a2dp_sharing.delay_ms; off: 0. Read per packet by bta_av, so
+// it is computed on the encoder tick and on sharing enter/exit, and published for DeviceSettings
+// as bluetooth.a2dp_sharing.hold_ms.
+// ponytail: only the sharing sink can be held; when it is the later one, auto holds nothing and
+// only the reported A/V sync delay covers it (swap roles to fix the headset gap)
+static std::atomic<int> s_hold_ms{0};
+
+int btif_a2dp_sharing_hold_ms(void) { return s_hold_ms.load(); }
+
+bool btif_a2dp_sharing_update_hold(void) {
+    int hold = 0;
+    RawAddress sharing = btif_a2dp_sharing_get_sharing_peer();
+    if (!sharing.IsEmpty()) {
+        char mode[PROPERTY_VALUE_MAX] = {};
+        osi_property_get("persist.bluetooth.a2dp_sharing.lipsync", mode, "auto");
+        if (strcmp(mode, "manual") == 0) {
+            hold = osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0);
+        } else if (strcmp(mode, "off") != 0) {
+            hold = (btif_av_get_peer_delay_report(btif_av_source_active_peer()) -
+                    btif_av_get_peer_delay_report(sharing)) / 10;
+        }
+        hold = std::clamp(hold, 0, 500);
+    }
+    if (s_hold_ms.exchange(hold) == hold) {
+        return false;
+    }
+    osi_property_set("bluetooth.a2dp_sharing.hold_ms", std::to_string(hold).c_str());
+    log::info("btif_a2dp_sharing: lip sync holds the sharing sink {} ms", hold);
+    return true;
 }
 
 RawAddress btif_a2dp_sharing_get_sharing_peer(void) {
@@ -144,6 +180,7 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
                 }
 
                 // Audio/video sync now waits for the later of the two sinks
+                btif_a2dp_sharing_update_hold();
                 bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
 
                 // Handle active streaming (kStateStarted)
@@ -220,6 +257,7 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
     }
 
     // Back to the active sink's own delay
+    btif_a2dp_sharing_update_hold();
     bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
 
     // Invoke state callback on JNI thread without holding s_sharing_mutex

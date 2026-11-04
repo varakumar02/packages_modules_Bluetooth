@@ -57,6 +57,7 @@
 
 // Weak default definitions in case stack is compiled in isolated tests without btif
 __attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
+__attribute__((weak)) int btif_a2dp_sharing_hold_ms(void) { return 0; }
 
 #include "btif/include/btif_av_co.h"
 #include "btif/include/btif_config.h"
@@ -1025,12 +1026,9 @@ uint32_t bta_av_sharing_drop_count(void) { return sharing_drop_count.load(); }
 
 void bta_av_sharing_count_drop(void) { sharing_drop_count++; }
 
-// Sync adjust (bta_av_sharing_hold) keeps delay_ms of audio queued for the sharing sink. LDAC
+// Lip sync (bta_av_sharing_hold) keeps hold_ms of audio queued for the sharing sink. LDAC
 // packets carry ~8 ms, so the queue is sized for 5 ms packets on top of the normal 6.
-size_t bta_av_sharing_queue_cap(void) {
-  return 6 + std::clamp(osi_property_get_int32("persist.bluetooth.a2dp_sharing.delay_ms", 0), 0,
-                        500) / 5;
-}
+size_t bta_av_sharing_queue_cap(void) { return 6 + btif_a2dp_sharing_hold_ms() / 5; }
 
 void bta_av_dup_audio_buf(tBTA_AV_SCB* p_scb, BT_HDR* p_buf) {
   /* Test whether there is more than one audio channel connected */
