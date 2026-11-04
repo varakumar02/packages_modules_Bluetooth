@@ -44,6 +44,10 @@
 #include "osi/include/allocator.h"
 #include "osi/include/properties.h"
 #include "stack/include/bt_hdr.h"
+#include "btif/include/btif_a2dp_sharing.h"
+
+// Weak default definitions in case stack is compiled in isolated tests without btif
+__attribute__((weak)) bool btif_a2dp_sharing_is_active(void) { return false; }
 
 //
 // Encoder for LDAC Source Codec
@@ -355,8 +359,16 @@ void a2dp_vendor_ldac_send_frames(uint64_t timestamp_us) {
       a2dp_ldac_encoder_cb.last_ldac_abr_eqmid =
               ldac_ABR_Proc(a2dp_ldac_encoder_cb.ldac_handle, a2dp_ldac_encoder_cb.ldac_abr_handle,
                             a2dp_ldac_encoder_cb.TxQueueLength, flag_enable);
+      // Shared stream: two sinks share the air time, so ABR stays at 660 kbps (SQ) or below
+      if (a2dp_ldac_encoder_cb.last_ldac_abr_eqmid == LDACBT_EQMID_HQ &&
+          btif_a2dp_sharing_is_active() &&
+          ldacBT_set_eqmid(a2dp_ldac_encoder_cb.ldac_handle, LDACBT_EQMID_SQ) == 0) {
+        a2dp_ldac_encoder_cb.last_ldac_abr_eqmid = LDACBT_EQMID_SQ;
+      }
       if (prev_eqmid != a2dp_ldac_encoder_cb.last_ldac_abr_eqmid) {
         a2dp_ldac_encoder_cb.ldac_abr_adjustments++;
+        log::info("LDAC ABR: eqmid {} -> {} (tx queue {})", prev_eqmid,
+                  a2dp_ldac_encoder_cb.last_ldac_abr_eqmid, a2dp_ldac_encoder_cb.TxQueueLength);
       }
 #ifdef __ANDROID__
       ATRACE_INT("LDAC ABR level", a2dp_ldac_encoder_cb.last_ldac_abr_eqmid);
