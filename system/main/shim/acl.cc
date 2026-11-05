@@ -672,6 +672,14 @@ public:
     }
   }
 
+  void FlowSpecification(uint32_t peak_bandwidth) {
+    if (connection_) {
+      connection_->FlowSpecification(hci::FlowDirection::OUTGOING_FLOW,
+                                     hci::ServiceType::GUARANTEED, 0, 0, peak_bandwidth,
+                                     0xFFFFFFFF);
+    }
+  }
+
 private:
   OnDisconnect on_disconnect_;
   const shim::acl_classic_link_interface_t interface_;
@@ -841,6 +849,14 @@ struct shim::Acl::impl {
   void Flush(HciHandle handle) {
     if (IsClassicAcl(handle)) {
       handle_to_classic_connection_map_[handle]->Flush();
+    } else {
+      log::error("handle {} is not a classic connection", handle);
+    }
+  }
+
+  void FlowSpecification(HciHandle handle, uint32_t peak_bandwidth) {
+    if (IsClassicAcl(handle)) {
+      handle_to_classic_connection_map_[handle]->FlowSpecification(peak_bandwidth);
     } else {
       log::error("handle {} is not a classic connection", handle);
     }
@@ -1317,6 +1333,15 @@ void shim::Acl::flush(HciHandle handle) { pimpl_->Flush(handle); }
 
 void shim::Acl::Flush(HciHandle handle) {
   handler_->Post(common::BindOnce(&Acl::flush, common::Unretained(this), handle));
+}
+
+void shim::Acl::flow_specification(HciHandle handle, uint32_t peak_bandwidth) {
+  pimpl_->FlowSpecification(handle, peak_bandwidth);
+}
+
+void shim::Acl::FlowSpecification(HciHandle handle, uint32_t peak_bandwidth) {
+  handler_->Post(common::BindOnce(&Acl::flow_specification, common::Unretained(this), handle,
+                                  peak_bandwidth));
 }
 
 void shim::Acl::CreateClassicConnection(const hci::Address& address) {

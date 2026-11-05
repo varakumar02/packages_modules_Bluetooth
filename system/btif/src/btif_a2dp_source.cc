@@ -56,6 +56,7 @@
 #include "common/repeating_timer.h"
 #include "common/time_util.h"
 #include "hardware/bt_av.h"
+#include "main/shim/acl_api.h"
 #include "osi/include/allocator.h"
 #include "osi/include/fixed_queue.h"
 #include "osi/include/wakelock.h"
@@ -65,6 +66,7 @@
 #include "stack/include/bt_hdr.h"
 #include "stack/include/btm_client_interface.h"
 #include "stack/include/btm_status.h"
+#include "stack/include/hcidefs.h"
 #include "stack/include/main_thread.h"
 
 #ifdef __ANDROID__
@@ -673,6 +675,40 @@ static void btif_a2dp_source_setup_codec(const RawAddress& peer_address) {
 
   encoder_interface->encoder_init(&peer_params, a2dp_codec_config, btif_a2dp_source_read_callback,
                                   btif_a2dp_source_enqueue_callback);
+
+  // Tell the controller the stream's peak bandwidth, as Qualcomm's stack does
+  // (btif_a2dp_source_setup_codec, BTM_FlowSpec). 0 = adaptive bit rate: without it the
+  // offloaded LDAC ABR stream stays at 990 kbps and the controller drops packets.
+  uint16_t acl_handle =
+          get_btm_client_interface().peer.BTM_GetHCIConnHandle(peer_address, BT_TRANSPORT_BR_EDR);
+  if (acl_handle != HCI_INVALID_HANDLE) {
+    const btav_a2dp_codec_config_t codec_config = a2dp_codec_config->getCodecConfig();
+    uint32_t peak_bandwidth = 0;  // bytes/s
+    switch (codec_config.codec_type) {
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_SBC:
+        peak_bandwidth = 345000 / 8;
+        break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_AAC:
+        peak_bandwidth = 165000 / 8;
+        break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX:
+        peak_bandwidth = 380000 / 8;
+        break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX_HD:
+        peak_bandwidth = 660000 / 8;
+        break;
+      case BTAV_A2DP_CODEC_INDEX_SOURCE_LDAC:
+        // codec_specific_1 0 (default) and 1003 are ABR
+        if (codec_config.codec_specific_1 != 0 && codec_config.codec_specific_1 % 10 != 3) {
+          peak_bandwidth = a2dp_codec_config->getTrackBitRate() / 8;
+        }
+        break;
+      default:  // aptX Adaptive and the rest adapt
+        break;
+    }
+    log::info("flow spec: handle {:#x} peak bandwidth {} bytes/s", acl_handle, peak_bandwidth);
+    bluetooth::shim::ACL_FlowSpecification(acl_handle, peak_bandwidth);
+  }
 
   // Save a local copy of the encoder_interval_ms
   btif_a2dp_source_cb.encoder_interface = encoder_interface;

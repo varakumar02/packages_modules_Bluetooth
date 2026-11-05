@@ -64,6 +64,10 @@ void bluetooth::shim::ACL_WriteData(uint16_t handle, BT_HDR* p_buf) {
 
 void bluetooth::shim::ACL_Flush(uint16_t handle) { Stack::GetInstance()->GetAcl()->Flush(handle); }
 
+void bluetooth::shim::ACL_FlowSpecification(uint16_t handle, uint32_t peak_bandwidth) {
+  Stack::GetInstance()->GetAcl()->FlowSpecification(handle, peak_bandwidth);
+}
+
 void bluetooth::shim::ACL_SendConnectionParameterUpdateRequest(
         uint16_t handle, uint16_t conn_int_min, uint16_t conn_int_max, uint16_t conn_latency,
         uint16_t conn_timeout, uint16_t min_ce_len, uint16_t max_ce_len) {
