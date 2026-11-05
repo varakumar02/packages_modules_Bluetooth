@@ -79,6 +79,7 @@ public:
   void WriteData(uint16_t hci_handle, std::unique_ptr<packet::RawBuilder> packet);
 
   void Flush(uint16_t hci_handle);
+  void FlowSpecification(uint16_t hci_handle, uint32_t peak_bandwidth);
 
   void Dump(int fd) const;
   void DumpConnectionHistory(int fd) const;
@@ -94,6 +95,7 @@ protected:
   void on_incoming_acl_credits(uint16_t handle, uint16_t credits);
   void write_data_sync(uint16_t hci_handle, std::unique_ptr<packet::RawBuilder> packet);
   void flush(uint16_t hci_handle);
+  void flow_specification(uint16_t hci_handle, uint32_t peak_bandwidth);
 
 private:
   os::Handler* handler_;

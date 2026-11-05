@@ -34,6 +34,8 @@ void ACL_CancelClassicConnection(const RawAddress& raw_address);
 void ACL_Disconnect(uint16_t handle, bool is_classic, tHCI_STATUS reason, std::string comment);
 void ACL_WriteData(uint16_t handle, BT_HDR* p_buf);
 void ACL_Flush(uint16_t handle);
+// HCI Flow Specification, outgoing, guaranteed; peak_bandwidth in bytes/s, 0 = adaptive bit rate
+void ACL_FlowSpecification(uint16_t handle, uint32_t peak_bandwidth);
 void ACL_ConfigureLePrivacy(bool is_le_privacy_enabled);
 void ACL_Shutdown();
 
