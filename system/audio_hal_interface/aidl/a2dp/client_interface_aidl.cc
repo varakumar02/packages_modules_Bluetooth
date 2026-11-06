@@ -47,13 +47,15 @@ BluetoothAudioClientInterface::BluetoothAudioClientInterface(IBluetoothTransport
       latency_modes_({LatencyMode::FREE}) {
   death_recipient_ =
           ::ndk::ScopedAIBinder_DeathRecipient(AIBinder_DeathRecipient_new(binderDiedCallbackAidl));
+  AIBinder_DeathRecipient_setOnUnlinked(death_recipient_.get(), [](void* cookie) {
+    delete static_cast<base::WeakPtr<BluetoothAudioClientInterface>*>(cookie);
+  });
   FetchAudioProvider();
 }
 
 BluetoothAudioClientInterface::~BluetoothAudioClientInterface() {
-  if (provider_factory_ != nullptr) {
-    AIBinder_unlinkToDeath(provider_factory_->asBinder().get(), death_recipient_.get(), nullptr);
-  }
+  // Binder delivery and queued recovery can outlive the client and its transport.
+  weak_factory_.InvalidateWeakPtrs();
 }
 
 bool BluetoothAudioClientInterface::IsValid() const { return provider_ != nullptr; }
@@ -210,7 +212,9 @@ void BluetoothAudioClientInterface::FetchAudioProvider() {
   log::assert_that(provider_ != nullptr, "assert failed: provider_ != nullptr");
 
   binder_status_t binder_status =
-          AIBinder_linkToDeath(provider_factory_->asBinder().get(), death_recipient_.get(), this);
+          AIBinder_linkToDeath(provider_factory_->asBinder().get(), death_recipient_.get(),
+                              new base::WeakPtr<BluetoothAudioClientInterface>(
+                                      weak_factory_.GetWeakPtr()));
   if (binder_status != STATUS_OK) {
     log::error("Failed to linkToDeath {}", static_cast<int>(binder_status));
   }
@@ -220,14 +224,14 @@ void BluetoothAudioClientInterface::FetchAudioProvider() {
 }
 
 void BluetoothAudioClientInterface::binderDiedCallbackAidl(void* ptr) {
-  auto client = static_cast<BluetoothAudioClientInterface*>(ptr);
+  auto* client = static_cast<base::WeakPtr<BluetoothAudioClientInterface>*>(ptr);
   if (client == nullptr) {
     log::error("null audio HAL died!");
     return;
   }
 
   do_in_main_thread(base::BindOnce(&BluetoothAudioClientInterface::RenewAudioProviderAndSession,
-                                   base::Unretained(client)));
+                                   *client));
 }
 
 bool BluetoothAudioClientInterface::UpdateAudioConfig(const AudioConfiguration& audio_config) {

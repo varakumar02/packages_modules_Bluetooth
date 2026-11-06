@@ -16,6 +16,7 @@
 
 #pragma once
 
+#include <base/memory/weak_ptr.h>
 #include <fmq/AidlMessageQueue.h>
 #include <hardware/audio.h>
 
@@ -172,6 +173,8 @@ private:
 
   static constexpr int kDefaultDataReadTimeoutMs = 10;
   static constexpr int kDefaultDataReadPollIntervalMs = 1;
+
+  base::WeakPtrFactory<BluetoothAudioClientInterface> weak_factory_{this};
 };
 
 }  // namespace a2dp
