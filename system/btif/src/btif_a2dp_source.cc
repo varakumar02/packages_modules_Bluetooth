@@ -689,7 +689,9 @@ static void btif_a2dp_source_setup_codec(const RawAddress& peer_address) {
         peak_bandwidth = 345000 / 8;
         break;
       case BTAV_A2DP_CODEC_INDEX_SOURCE_AAC:
-        peak_bandwidth = 165000 / 8;
+        peak_bandwidth = a2dp_codec_config->getTrackBitRate() > 0
+                ? a2dp_codec_config->getTrackBitRate() / 8
+                : 320000 / 8;
         break;
       case BTAV_A2DP_CODEC_INDEX_SOURCE_APTX:
         peak_bandwidth = 380000 / 8;
