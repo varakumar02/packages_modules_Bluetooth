@@ -486,6 +486,12 @@ bool A2dpLdacToHalConfig(const ahal_codec_configuration& config, CodecConfigurat
         break;
     }
   }
+  // The DSP's ABR starts at 990 kbps and never steps down here, overflowing the
+  // controller; its level table lives in the vendor offload library, so cap ABR
+  // by running the offloaded stream at Standard quality (660/606 kbps) instead.
+  if (ldac_quality == A2DP_LDAC_QUALITY_ABR_OFFLOAD) {
+    ldac_quality = A2DP_LDAC_QUALITY_MID;
+  }
   switch (ldac_quality) {
     case A2DP_LDAC_QUALITY_HIGH:
       ldac_config.qualityIndex = LdacQualityIndex::QUALITY_HIGH;

@@ -701,6 +701,11 @@ static void btif_a2dp_source_setup_codec(const RawAddress& peer_address) {
         // codec_specific_1 0 (default) and 1003 are ABR
         if (codec_config.codec_specific_1 != 0 && codec_config.codec_specific_1 % 10 != 3) {
           peak_bandwidth = a2dp_codec_config->getTrackBitRate() / 8;
+        } else if (btif_av_is_a2dp_offload_enabled()) {
+          // offloaded ABR runs at Standard quality (codec_status_qti.cc)
+          bool is_44k = codec_config.sample_rate &
+                        (BTAV_A2DP_CODEC_SAMPLE_RATE_44100 | BTAV_A2DP_CODEC_SAMPLE_RATE_88200);
+          peak_bandwidth = (is_44k ? 606000 : 660000) / 8;
         }
         break;
       default:  // aptX Adaptive and the rest adapt
