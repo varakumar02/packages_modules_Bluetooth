@@ -25,6 +25,7 @@ import android.os.IBinder;
 import android.os.Looper;
 import android.os.RemoteCallbackList;
 import android.os.RemoteException;
+import android.os.SystemClock;
 import android.provider.Settings;
 import android.util.Log;
 
@@ -88,6 +89,8 @@ public class OplusA2dpSharingService extends Service {
     private BluetoothCodecConfig mSharingCodec;
     private boolean mInSharingMode = false;
     private boolean mStarting = false;
+    private boolean mStopping = false;
+    private long mTeardownId;
     private boolean mMasterSwitchEnabled = false;
     private int mSharingType = 0;
     private boolean mIsPrimaryAbsTurnedOffAgainstWill = false;
@@ -145,7 +148,7 @@ public class OplusA2dpSharingService extends Service {
                     if (state == BluetoothProfile.STATE_DISCONNECTED && device != null) {
                         boolean shouldTeardown;
                         synchronized (mLock) {
-                            shouldTeardown = (mInSharingMode || mStarting)
+                            shouldTeardown = (mInSharingMode || mStarting || mStopping)
                                     && (device.equals(mPrimaryDevice) || device.equals(mSecondaryDevice));
                             if (shouldTeardown) {
                                 Log.i(TAG, "Sharing peer " + device + " disconnected, triggering teardown");
@@ -186,7 +189,7 @@ public class OplusA2dpSharingService extends Service {
                                 Log.i(TAG, "Active A2DP device switched to 3rd party device " + activeDevice
                                         + " (primary=" + mPrimaryDevice + ", sec=" + mSecondaryDevice + "); triggering teardown");
                             }
-                        } else {
+                        } else if (!mStopping) {
                             if (activeDevice != null) {
                                 mPrimaryDevice = activeDevice;
                                 Log.i(TAG, "Updated prospective primary device to: " + activeDevice);
@@ -239,30 +242,17 @@ public class OplusA2dpSharingService extends Service {
             synchronized (mLock) {
                 mMasterSwitchEnabled = enabled;
             }
-            try {
-                Settings.System.putInt(getContentResolver(), "oplus_bluetooth_a2dp_share", enabled ? 1 : 0);
-            } catch (Throwable th) {
-                Log.w(TAG, "Failed to persist oplus_bluetooth_a2dp_share setting", th);
-            }
-            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
-            if (adapterService == null) return true;
-            A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
-            if (a2dpService == null) return true;
-
             if (!enabled) {
-                boolean inSharing;
-                synchronized (mLock) {
-                    inSharing = mInSharingMode || mStarting;
-                }
-                if (inSharing) {
-                    teardown("master_switch_disabled", true);
-                } else {
-                    for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
-                        restoreDeviceCodec(a2dpService, dev);
-                        mCodecSnapshots.remove(dev);
-                    }
-                }
+                teardown("master_switch_disabled", true);
             }
+            // The settings UI calls this synchronously; persistence and native cleanup must not.
+            sAsyncExecutor.execute(() -> {
+                try {
+                    Settings.System.putInt(getContentResolver(), "oplus_bluetooth_a2dp_share", enabled ? 1 : 0);
+                } catch (Throwable th) {
+                    Log.w(TAG, "Failed to persist oplus_bluetooth_a2dp_share setting", th);
+                }
+            });
             return true;
         }
 
@@ -325,7 +315,7 @@ public class OplusA2dpSharingService extends Service {
 
             // Atomic re-entrancy & transition guard
             synchronized (mLock) {
-                if (mInSharingMode || mStarting) {
+                if (!mMasterSwitchEnabled || mInSharingMode || mStarting || mStopping) {
                     Log.w(TAG, "startSharing: sharing already active or transition in progress, rejecting");
                     return false;
                 }
@@ -373,6 +363,8 @@ public class OplusA2dpSharingService extends Service {
                     return false;
                 }
                 mPrimaryDevice = primary;
+                mSecondaryDevice = device;
+                mSharingType = sharingType;
             }
 
             // Promote service to started state so it outlives DeviceSettings process
@@ -386,6 +378,9 @@ public class OplusA2dpSharingService extends Service {
             // so the Binder thread is not blocked (eliminates Tile / SystemUI ANR hazard)
             sAsyncExecutor.execute(() -> {
                 try {
+                    synchronized (mLock) {
+                        if (!mStarting) return;
+                    }
                     // Snapshot existing codecs and optional codec preferences before modification
                     snapshotCodec(a2dpService, primary);
                     snapshotCodec(a2dpService, device);
@@ -393,6 +388,9 @@ public class OplusA2dpSharingService extends Service {
                     // Put both peers on the same codec config, best common codec first
                     boolean configured = false;
                     for (BluetoothCodecConfig cfg : sharingCodecCandidates(a2dpService, primary, device)) {
+                        synchronized (mLock) {
+                            if (!mStarting) return;
+                        }
                         Log.i(TAG, "startSharing: trying " + cfg);
                         if (applySharingCodec(a2dpService, primary, cfg)
                                 && applySharingCodec(a2dpService, device, cfg)
@@ -404,21 +402,21 @@ public class OplusA2dpSharingService extends Service {
                     }
                     if (!configured) {
                         Log.e(TAG, "startSharing: no codec config both peers accept, rolling back");
-                        rollbackSharing(a2dpService, primary, device);
+                        rollbackSharing();
                         return;
                     }
 
                     synchronized (mLock) {
                         if (!mStarting) {
                             Log.w(TAG, "startSharing: aborted during setup wait (teardown requested)");
-                            rollbackSharing(a2dpService, primary, device);
+                            rollbackSharing();
                             return;
                         }
                     }
 
                     if (mNativeInterface == null) {
                         Log.e(TAG, "startSharing: mNativeInterface is null");
-                        rollbackSharing(a2dpService, primary, device);
+                        rollbackSharing();
                         return;
                     }
 
@@ -428,7 +426,7 @@ public class OplusA2dpSharingService extends Service {
 
                     if (!success) {
                         Log.e(TAG, "Native enterSharing failed, rolling back");
-                        rollbackSharing(a2dpService, primary, device);
+                        rollbackSharing();
                         return;
                     }
 
@@ -453,21 +451,9 @@ public class OplusA2dpSharingService extends Service {
                     // (drops it to DEVICE_VOLUME_BEHAVIOR_VARIABLE software attenuation), preventing
                     // non-AbsVol secondary devices (smartwatches, speakers) from blasting at 100% max volume.
                     handleDynamicAbsVolumeStateChange(primary, device);
-
-                    // Query and broadcast initial secondary volume to UI sliders
-                    try {
-                        AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
-                        if (avrcp != null) {
-                            int curVol = avrcp.getRememberedVolumeForDevice(device);
-                            int avrcpVol = (curVol >= 0) ? Math.round((float) curVol * 127.0f / 30.0f) : 100;
-                            notifyVolumeChanged(device, avrcpVol);
-                        }
-                    } catch (Throwable t) {
-                        Log.w(TAG, "Failed to broadcast initial secondary volume", t);
-                    }
                 } catch (Throwable t) {
                     Log.e(TAG, "startSharing async setup encountered error, rolling back", t);
-                    rollbackSharing(a2dpService, primary, device);
+                    rollbackSharing();
                 }
             });
 
@@ -486,6 +472,12 @@ public class OplusA2dpSharingService extends Service {
         public boolean setSharingDeviceAbsoluteVolume(BluetoothDevice device, int volume, AttributionSource attributionSource) {
             enforceBluetoothPrivileged();
             if (device == null) return false;
+            synchronized (mLock) {
+                if (!mInSharingMode || mStopping
+                        || (!device.equals(mPrimaryDevice) && !device.equals(mSecondaryDevice))) {
+                    return false;
+                }
+            }
             int clampedVolume = Math.max(0, Math.min(127, volume));
             Log.i(TAG, "setSharingDeviceAbsoluteVolume: dev=" + device + " vol=" + clampedVolume);
 
@@ -493,16 +485,18 @@ public class OplusA2dpSharingService extends Service {
                 AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
                 if (adapterService != null) {
                     AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
-                    if (avrcp != null) {
+                    if (avrcp != null && avrcp.getAbsoluteVolumeSupported(device)) {
                         avrcp.sendAbsVolumeChanged(device, clampedVolume);
+                        notifyVolumeChanged(device, clampedVolume);
+                        return true;
                     }
                 }
             } catch (Throwable t) {
                 Log.w(TAG, "Failed to dispatch AVRCP absolute volume to " + device, t);
             }
 
-            notifyVolumeChanged(device, clampedVolume);
-            return true;
+            Log.w(TAG, "Independent volume is unavailable for " + device);
+            return false;
         }
 
         @Override
@@ -546,23 +540,25 @@ public class OplusA2dpSharingService extends Service {
             if (callback != null) {
                 boolean registered = mVolumeCallbacks.register(callback);
                 if (registered) {
-                    synchronized (mLock) {
-                        if (mInSharingMode && mSecondaryDevice != null) {
-                            try {
-                                AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
-                                if (adapterService != null) {
-                                    AvrcpTargetService avrcp = (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
-                                    if (avrcp != null) {
-                                        int curVol = avrcp.getRememberedVolumeForDevice(mSecondaryDevice);
-                                        int avrcpVol = (curVol >= 0) ? Math.round((float) curVol * 127.0f / 30.0f) : 100;
-                                        callback.onDeviceVolumeChanged(mSecondaryDevice, avrcpVol);
-                                    }
-                                }
-                            } catch (Throwable t) {
-                                Log.w(TAG, "Failed to send initial volume to registered callback", t);
-                            }
+                    sAsyncExecutor.execute(() -> {
+                        BluetoothDevice[] devices;
+                        synchronized (mLock) {
+                            if (!mInSharingMode) return;
+                            devices = new BluetoothDevice[] {mPrimaryDevice, mSecondaryDevice};
                         }
-                    }
+                        try {
+                            AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
+                            AvrcpTargetService avrcp = adapterService == null ? null
+                                    : (AvrcpTargetService) adapterService.getAvrcpTargetService().orElse(null);
+                            if (avrcp == null) return;
+                            for (BluetoothDevice device : devices) {
+                                if (device != null) callback.onDeviceVolumeChanged(device,
+                                        getDeviceAbsoluteVolume(avrcp, device));
+                            }
+                        } catch (RemoteException e) {
+                            Log.w(TAG, "Failed to send initial volume to registered callback", e);
+                        }
+                    });
                 }
                 return registered;
             }
@@ -613,6 +609,14 @@ public class OplusA2dpSharingService extends Service {
             new OplusA2dpSharingNativeInterface.Callback() {
         @Override
         public void onSharingDeviceVolumeChanged(BluetoothDevice device, int volume) {
+            synchronized (mLock) {
+                if (!mInSharingMode || device == null
+                        || (!device.equals(mPrimaryDevice) && !device.equals(mSecondaryDevice))) return;
+            }
+            AdapterService adapter = AdapterService.deprecatedGetAdapterService();
+            AvrcpTargetService avrcp = adapter == null ? null
+                    : (AvrcpTargetService) adapter.getAvrcpTargetService().orElse(null);
+            if (avrcp != null) avrcp.storeAbsoluteVolumeForDevice(device, volume);
             notifyVolumeChanged(device, volume);
         }
 
@@ -621,12 +625,33 @@ public class OplusA2dpSharingService extends Service {
             boolean active = (state == 1);
             if (active) {
                 synchronized (mLock) {
+                    if (mStopping || (!mStarting && !mInSharingMode)) {
+                        Log.w(TAG, "Ignoring STARTED after sharing was cancelled");
+                        return;
+                    }
                     cancelEnterTimeout();
+                    mStarting = false;
                     mInSharingMode = true;
                     if (primary != null) mPrimaryDevice = primary;
                     if (secondary != null) mSecondaryDevice = secondary;
                 }
                 notifyStateChanged(true, primary, secondary);
+                // Refresh both sliders after STARTED, including a role swap.
+                sAsyncExecutor.execute(() -> {
+                    BluetoothDevice[] devices;
+                    synchronized (mLock) {
+                        if (!mInSharingMode || mStopping) return;
+                        devices = new BluetoothDevice[] {mPrimaryDevice, mSecondaryDevice};
+                    }
+                    AdapterService adapter = AdapterService.deprecatedGetAdapterService();
+                    AvrcpTargetService avrcp = adapter == null ? null
+                            : (AvrcpTargetService) adapter.getAvrcpTargetService().orElse(null);
+                    if (avrcp == null) return;
+                    for (BluetoothDevice device : devices) {
+                        if (device != null) notifyVolumeChanged(device,
+                                getDeviceAbsoluteVolume(avrcp, device));
+                    }
+                });
             } else {
                 // Native-initiated exit (e.g. BTA_AV_CLOSE_EVT) routes through teardown
                 teardown("native_stopped_callback", false);
@@ -841,15 +866,18 @@ public class OplusA2dpSharingService extends Service {
         }
     }
 
-    private static boolean waitForSharingCodec(A2dpService a2dpService, BluetoothDevice primary,
+    private boolean waitForSharingCodec(A2dpService a2dpService, BluetoothDevice primary,
             BluetoothDevice secondary, BluetoothCodecConfig cfg, long timeoutMs) {
-        long start = System.currentTimeMillis();
-        while (System.currentTimeMillis() - start < timeoutMs) {
+        long start = SystemClock.elapsedRealtime();
+        while (SystemClock.elapsedRealtime() - start < timeoutMs) {
+            synchronized (mLock) {
+                if (!mStarting) return false;
+            }
             try {
                 if (matchesSharingCodec(currentCodec(a2dpService, primary), cfg)
                         && matchesSharingCodec(currentCodec(a2dpService, secondary), cfg)) {
                     Log.i(TAG, "waitForSharingCodec: both peers on the sharing codec in "
-                            + (System.currentTimeMillis() - start) + "ms");
+                            + (SystemClock.elapsedRealtime() - start) + "ms");
                     return true;
                 }
                 Thread.sleep(50);
@@ -911,28 +939,8 @@ public class OplusA2dpSharingService extends Service {
         }
     }
 
-    private void rollbackSharing(A2dpService a2dpService, BluetoothDevice primary, BluetoothDevice secondary) {
-        synchronized (mLock) {
-            cancelEnterTimeout();
-            mInSharingMode = false;
-            mStarting = false;
-            mPrimaryDevice = null;
-            mSecondaryDevice = null;
-        }
-        if (a2dpService != null) {
-            if (primary != null) restoreDeviceCodec(a2dpService, primary);
-            if (secondary != null) restoreDeviceCodec(a2dpService, secondary);
-            for (BluetoothDevice dev : new ArrayList<>(mCodecSnapshots.keySet())) {
-                restoreDeviceCodec(a2dpService, dev);
-            }
-        }
-        restoreDynamicAbsVolume(primary, secondary);
-        notifyStateChanged(false, primary, secondary);
-        try {
-            stopSelf();
-        } catch (Exception e) {
-            Log.d(TAG, "rollbackSharing: stopSelf skipped", e);
-        }
+    private void rollbackSharing() {
+        teardown("start_rollback", true);
     }
 
     /**
@@ -943,59 +951,84 @@ public class OplusA2dpSharingService extends Service {
     private void teardown(String reason, boolean callNativeExit) {
         BluetoothDevice primary;
         BluetoothDevice secondary;
+        final long teardownId;
 
         synchronized (mLock) {
-            boolean wasSharing = mInSharingMode || mStarting || !mCodecSnapshots.isEmpty() || mSecondaryDevice != null;
-            if (!wasSharing) {
-                Log.d(TAG, "teardown: already idle (" + reason + ")");
-                return;
+            if (mStopping) {
+                if (callNativeExit) return;
+            } else {
+                boolean wasSharing = mInSharingMode || mStarting || !mCodecSnapshots.isEmpty() || mSecondaryDevice != null;
+                if (!wasSharing) {
+                    Log.d(TAG, "teardown: already idle (" + reason + ")");
+                    return;
+                }
+                mStopping = true;
+                ++mTeardownId;
             }
+            teardownId = mTeardownId;
             cancelEnterTimeout();
+            mHandler.removeCallbacks(mNoActiveDeviceRunnable);
             primary = mPrimaryDevice;
             secondary = mSecondaryDevice;
             mInSharingMode = false;
             mStarting = false;
-            mSecondaryDevice = null;
         }
 
         Log.i(TAG, "Executing teardown (reason: " + reason + ", callNativeExit=" + callNativeExit
                 + ", primary=" + primary + ", secondary=" + secondary + ")");
 
         if (callNativeExit && mNativeInterface != null) {
-            // Cancel any previously scheduled fallback
-            if (mTeardownFallbackRunnable != null) {
-                mHandler.removeCallbacks(mTeardownFallbackRunnable);
-                mTeardownFallbackRunnable = null;
-            }
-
-            // Post a fallback watchdog (1000ms) in case native callback does not return
             final BluetoothDevice finalPrim = primary;
             final BluetoothDevice finalSec = secondary;
-            mTeardownFallbackRunnable = () -> {
-                Log.w(TAG, "Teardown native STOPPED callback timed out after 1000ms, forcing completion");
-                synchronized (mLock) {
+            synchronized (mLock) {
+                if (!mStopping || teardownId != mTeardownId) return;
+                if (mTeardownFallbackRunnable != null) {
+                    mHandler.removeCallbacks(mTeardownFallbackRunnable);
                     mTeardownFallbackRunnable = null;
                 }
-                finishTeardown(finalPrim, finalSec);
-            };
-            mHandler.postDelayed(mTeardownFallbackRunnable, 1000);
+                // A delayed stop must not replace a newer teardown's watchdog.
+                mTeardownFallbackRunnable = () -> {
+                    synchronized (mLock) {
+                        if (!mStopping || teardownId != mTeardownId) return;
+                        mTeardownFallbackRunnable = null;
+                    }
+                    Log.w(TAG, "Teardown native STOPPED callback timed out after 1000ms, forcing completion");
+                    sAsyncExecutor.execute(() -> finishTeardown(teardownId, finalPrim, finalSec));
+                };
+                mHandler.postDelayed(mTeardownFallbackRunnable, 1000);
+            }
 
             // Request Fluoride main thread to stop secondary stream and restart primary session
-            mNativeInterface.exitSharing();
+            sAsyncExecutor.execute(() -> {
+                synchronized (mLock) {
+                    if (!mStopping || teardownId != mTeardownId) return;
+                }
+                if (!mNativeInterface.exitSharing()) {
+                    finishTeardown(teardownId, finalPrim, finalSec);
+                }
+            });
             return;
         }
 
         // Native exit completed or fallback triggered: perform codec restore and service shutdown
         synchronized (mLock) {
+            if (!mStopping || teardownId != mTeardownId) return;
             if (mTeardownFallbackRunnable != null) {
                 mHandler.removeCallbacks(mTeardownFallbackRunnable);
                 mTeardownFallbackRunnable = null;
             }
         }
-        finishTeardown(primary, secondary);
+        sAsyncExecutor.execute(() -> finishTeardown(teardownId, primary, secondary));
     }
 
-    private void finishTeardown(BluetoothDevice primary, BluetoothDevice secondary) {
+    private void finishTeardown(long teardownId, BluetoothDevice primary, BluetoothDevice secondary) {
+        synchronized (mLock) {
+            if (!mStopping || teardownId != mTeardownId) return;
+            if (mTeardownFallbackRunnable != null) {
+                mHandler.removeCallbacks(mTeardownFallbackRunnable);
+                mTeardownFallbackRunnable = null;
+            }
+        }
         AdapterService adapterService = AdapterService.deprecatedGetAdapterService();
         if (adapterService != null) {
             A2dpService a2dpService = (A2dpService) adapterService.getA2dpService().orElse(null);
@@ -1023,6 +1056,20 @@ public class OplusA2dpSharingService extends Service {
         } catch (Exception e) {
             Log.d(TAG, "finishTeardown: stopSelf skipped", e);
         }
+        synchronized (mLock) {
+            mPrimaryDevice = null;
+            mSecondaryDevice = null;
+            mSharingCodec = null;
+            mStopping = false;
+        }
+    }
+
+    private int getDeviceAbsoluteVolume(AvrcpTargetService avrcp, BluetoothDevice device) {
+        int volume = avrcp.getRememberedVolumeForDevice(device);
+        AudioManager audio = getSystemService(AudioManager.class);
+        int max = audio == null ? 0 : audio.getStreamMaxVolume(AudioManager.STREAM_MUSIC);
+        return volume >= 0 && max > 0 ? Math.max(0, Math.min(127,
+                Math.round((float) volume * 127.0f / max))) : 100;
     }
 
     private void handleDynamicAbsVolumeStateChange(BluetoothDevice primary, BluetoothDevice secondary) {

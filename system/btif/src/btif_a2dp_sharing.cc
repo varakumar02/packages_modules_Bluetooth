@@ -375,6 +375,16 @@ static bool set_sharing_volume(const RawAddress& bd_addr, int volume) {
     return true;
 }
 
+bool btif_a2dp_sharing_on_volume_changed(const RawAddress& bd_addr, int volume) {
+    {
+        std::lock_guard<std::mutex> lock(s_sharing_mutex);
+        if (!s_in_sharing_mode || (bd_addr != s_primary_address && bd_addr != s_secondary_address)) {
+            return false;
+        }
+    }
+    return set_sharing_volume(bd_addr, volume);
+}
+
 static const btav_sharing_interface_t s_a2dp_sharing_interface = {
     .size = sizeof(btav_sharing_interface_t),
     .init = init,

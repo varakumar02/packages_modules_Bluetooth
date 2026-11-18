@@ -947,6 +947,17 @@ static void btu_hcif_hdl_command_complete(uint16_t opcode, uint8_t* p, uint16_t 
       btm_ble_read_resolving_list_entry_complete(p, evt_len);
       break;
 
+    case HCI_WRITE_POLICY_SETTINGS:
+    case HCI_SNIFF_SUB_RATE: {
+      // These legacy commands return a status byte and a connection handle.
+      if (evt_len < 3) {
+        log::error("Short link policy command complete: opcode=0x{:04x}, length={}", opcode, evt_len);
+      } else if (p[0] != HCI_SUCCESS) {
+        log::error("Link policy command 0x{:04x} failed: status=0x{:02x}", opcode, p[0]);
+      }
+      break;
+    }
+
     // Explicitly handled command complete events
     case HCI_BLE_READ_RESOLVABLE_ADDR_LOCAL:
     case HCI_BLE_SET_ADDR_RESOLUTION_ENABLE:

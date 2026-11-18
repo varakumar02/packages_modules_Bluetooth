@@ -16,12 +16,14 @@
  */
 
 #include "device.h"
+#include "btif/include/btif_a2dp_sharing.h"
 #include "fuzzer/FuzzedDataProvider.h"
 #include "internal_include/stack_config.h"
 #include "packet_test_helper.h"
 #include "pass_through_packet.h"
 
 bool btif_av_src_sink_coexist_enabled(void) { return true; }
+bool btif_a2dp_sharing_on_volume_changed(const RawAddress&, int) { return false; }
 
 namespace bluetooth {
 namespace avrcp {

@@ -26,12 +26,14 @@
 #include "avrcp_packet.h"
 #include "avrcp_test_helper.h"
 #include "btif/include/btif_av.h"
+#include "btif/include/btif_a2dp_sharing.h"
 #include "device.h"
 #include "internal_include/stack_config.h"
 #include "tests/avrcp/avrcp_test_packets.h"
 #include "tests/packet_test_helper.h"
 
 bool btif_av_src_sink_coexist_enabled(void) { return true; }
+bool btif_a2dp_sharing_on_volume_changed(const RawAddress&, int) { return false; }
 
 namespace bluetooth {
 namespace avrcp {

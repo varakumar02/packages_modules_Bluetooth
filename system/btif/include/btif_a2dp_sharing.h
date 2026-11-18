@@ -39,6 +39,8 @@ RawAddress btif_a2dp_sharing_get_sharing_peer(void);
 // persist.bluetooth.a2dp_sharing.offload_probe (aosp, true or qti): share with A2DP offload kept on (test)
 bool btif_a2dp_sharing_offload_probe(void);
 void btif_a2dp_sharing_on_peer_disconnected(const RawAddress& bd_addr);
+// True when the volume was delivered to a sharing peer instead of the shared media stream.
+bool btif_a2dp_sharing_on_volume_changed(const RawAddress& bd_addr, int volume);
 // Lip sync hold in ms, -500..500: > 0 holds the sharing sink, < 0 the active sink (see
 // btif_a2dp_sharing.cc)
 int btif_a2dp_sharing_hold_ms(void);

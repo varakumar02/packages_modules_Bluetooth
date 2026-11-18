@@ -26,6 +26,7 @@
 #include "array_utils.h"
 #include "avrcp_common.h"
 #include "btif/include/btif_av.h"
+#include "btif/include/btif_a2dp_sharing.h"
 #include "internal_include/stack_config.h"
 #include "packet/avrcp/avrcp_reject_packet.h"
 #include "packet/avrcp/general_reject_packet.h"
@@ -169,7 +170,8 @@ void Device::VendorPacketHandler(uint8_t label, std::shared_ptr<VendorPacket> pk
           if (pending_volume_.has_value()) {
             log::info("Set pending volume with {}", pending_volume_.value());
             SetVolume(pending_volume_.value());
-          } else if (volume_interface_ != nullptr) {
+          } else if (volume_interface_ != nullptr &&
+                     !btif_a2dp_sharing_on_volume_changed(GetAddress(), volume_)) {
             volume_interface_->SetVolume(volume_);
           }
         }
@@ -576,13 +578,17 @@ void Device::HandleVolumeChanged(uint8_t label,
     return;
   }
 
+  int8_t vol = pkt->GetVolume();
+  vol &= ~0x80;  // remove RFA bit
+  if (btif_a2dp_sharing_on_volume_changed(GetAddress(), vol)) {
+    volume_ = vol;
+    return;
+  }
+
   if (!IsActive()) {
     log::verbose("Ignoring volume changes from non active device");
     return;
   }
-
-  int8_t vol = pkt->GetVolume();
-  vol &= ~0x80;  // remove RFA bit
 
   bool use_returned_volume_flag = com_android_bluetooth_flags_use_returned_absolute_volume();
 
@@ -745,12 +751,13 @@ void Device::PlaybackPosNotificationResponse(uint8_t label, bool interim, PlaySt
   if (!interim) {
     active_labels_.erase(label);
     play_pos_changed_ = Notification(false, 0);
+    play_pos_update_cb_.Cancel();
   }
 
   // We still try to send updates while music is playing to the non active
   // device even though the device thinks the music is paused. This makes
   // the status bar on the remote device move.
-  if (status.state == PlayState::PLAYING && !IsInSilenceMode()) {
+  if (play_pos_changed_.first && status.state == PlayState::PLAYING && !IsInSilenceMode()) {
     log::verbose("Queue next play position update");
     play_pos_update_cb_.Reset(
             base::Bind(&Device::HandlePlayPosUpdate, weak_ptr_factory_.GetWeakPtr()));
@@ -1647,8 +1654,10 @@ void Device::SendMediaUpdate(bool metadata, bool play_status, bool queue) {
   }
 
   if (play_status) {
-    HandlePlayStatusUpdate();
-    if (!is_silence) {
+    if (play_status_changed_.first) {
+      HandlePlayStatusUpdate();
+    }
+    if (!is_silence && play_pos_changed_.first) {
       HandlePlayPosUpdate();
     }
   }

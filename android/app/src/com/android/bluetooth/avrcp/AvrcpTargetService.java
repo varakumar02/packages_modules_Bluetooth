@@ -299,6 +299,13 @@ public class AvrcpTargetService extends ProfileService {
         return mVolumeManager.getVolume(device, mVolumeManager.getNewDeviceVolume());
     }
 
+    /** Remember a sharing peer's volume without changing the shared media stream. */
+    public void storeAbsoluteVolumeForDevice(BluetoothDevice device, int avrcpVolume) {
+        if (device == null || mVolumeManager == null) return;
+        mVolumeManager.storeVolumeForDevice(device,
+                mVolumeManager.avrcpToSystemVolume(Math.max(0, Math.min(127, avrcpVolume))));
+    }
+
     /**
      * Handle when A2DP connection state changes.
      *
