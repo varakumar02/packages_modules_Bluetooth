@@ -20,6 +20,7 @@
 
 #pragma once
 
+#include <base/memory/weak_ptr.h>
 #include <bluetooth/log.h>
 #include <fmq/MessageQueue.h>
 #include <hardware/audio.h>
@@ -146,6 +147,7 @@ private:
   IBluetoothSinkTransportInstance* sink_;
   std::vector<AudioCapabilities> capabilities_;
   uint16_t sink_latency_ = 0;
+  base::WeakPtrFactory<BluetoothAudioSinkClientInterface> weak_factory_{this};
 };
 
 }  // namespace qti

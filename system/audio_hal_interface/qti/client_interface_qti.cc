@@ -137,24 +137,26 @@ private:
 
 class BluetoothAudioDeathRecipient : public ::android::hardware::hidl_death_recipient {
 public:
-  BluetoothAudioDeathRecipient(BluetoothAudioSinkClientInterface* clientif,
+  BluetoothAudioDeathRecipient(base::WeakPtr<BluetoothAudioSinkClientInterface> clientif,
                                bluetooth::common::MessageLoopThread* message_loop)
       : bluetooth_audio_clientif_(clientif), message_loop_(message_loop) {}
   void serviceDied(uint64_t /*cookie*/,
                    const ::android::wp<::android::hidl::base::V1_0::IBase>& /*who*/) override {
     log::warn("restarting connection with new Audio Hal");
-    if (bluetooth_audio_clientif_ != nullptr && message_loop_ != nullptr) {
+    // Runs on a hwbinder thread: the WeakPtr is only checked when the task
+    // runs on message_loop_, which drops it if the client is gone.
+    if (message_loop_ != nullptr) {
       // restart the session on the correct thread
       message_loop_->DoInThread(
               base::BindOnce(&BluetoothAudioSinkClientInterface::RenewAudioProviderAndSession,
-                             base::Unretained(bluetooth_audio_clientif_)));
+                             bluetooth_audio_clientif_));
     } else {
-      log::error("BluetoothAudioSinkClientInterface corrupted");
+      log::error("BluetoothAudioSinkClientInterface has no message loop");
     }
   }
 
 private:
-  BluetoothAudioSinkClientInterface* bluetooth_audio_clientif_;
+  base::WeakPtr<BluetoothAudioSinkClientInterface> bluetooth_audio_clientif_;
   bluetooth::common::MessageLoopThread* message_loop_;
 };
 
@@ -207,19 +209,15 @@ void BluetoothAudioSinkClientInterface::FetchAudioProvider() {
   log::info("BluetoothAudioHal SessionType={} has {} AudioCapabilities",
             toString(sink_->GetSessionType()), capabilities_.size());
 
-  std::promise<void> openProvider_promise;
-  auto openProvider_future = openProvider_promise.get_future();
-  auto openProvider_cb = [&provider_ = this->provider_, &openProvider_promise](
+  auto openProvider_cb = [&provider_ = this->provider_](
                                  BluetoothAudioStatus status,
                                  const android::sp<IBluetoothAudioProvider>& provider) {
     log::info("openProvider_2_1_cb({})", toString(status));
     if (status == BluetoothAudioStatus::SUCCESS) {
       provider_ = provider;
     }
-    openProvider_promise.set_value();
   };
   auto hidl_retval = providersFactory->openProvider_2_1(sink_->GetSessionType(), openProvider_cb);
-  openProvider_future.get();
   if (!hidl_retval.isOk() || provider_ == nullptr) {
     log::error("BluetoothAudioHal::openProvider_2_1 failure: {}", hidl_retval.description());
     provider_ = nullptr;
@@ -239,12 +237,14 @@ BluetoothAudioSinkClientInterface::BluetoothAudioSinkClientInterface(
     : provider_(nullptr),
       session_started_(false),
       mDataMQ(nullptr),
-      death_recipient_(new BluetoothAudioDeathRecipient(this, message_loop)),
+      death_recipient_(nullptr),
       sink_(sink) {
+  death_recipient_ = new BluetoothAudioDeathRecipient(weak_factory_.GetWeakPtr(), message_loop);
   FetchAudioProvider();
 }
 
 BluetoothAudioSinkClientInterface::~BluetoothAudioSinkClientInterface() {
+  weak_factory_.InvalidateWeakPtrs();
   if (provider_ != nullptr) {
     auto hidl_retval = provider_->unlinkToDeath(death_recipient_);
     if (!hidl_retval.isOk()) {
@@ -280,19 +280,15 @@ int BluetoothAudioSinkClientInterface::StartSession() {
   std::unique_ptr<DataMQ> tempDataMQ;
   BluetoothAudioStatus session_status = BluetoothAudioStatus::FAILURE;
 
-  std::promise<void> hidl_startSession_promise;
-  auto hidl_startSession_future = hidl_startSession_promise.get_future();
-  auto hidl_cb = [&session_status, &tempDataMQ, &hidl_startSession_promise](
+  auto hidl_cb = [&session_status, &tempDataMQ](
                          BluetoothAudioStatus status, const DataMQ::Descriptor& dataMQ) {
     log::info("startSession_2_1_cb({})", toString(status));
     session_status = status;
     if (status == BluetoothAudioStatus::SUCCESS && dataMQ.isHandleValid()) {
       tempDataMQ.reset(new DataMQ(dataMQ));
     }
-    hidl_startSession_promise.set_value();
   };
   auto hidl_retval = provider_->startSession_2_1(stack_if, sink_->GetAudioConfiguration(), hidl_cb);
-  hidl_startSession_future.get();
   if (!hidl_retval.isOk()) {
     log::error("BluetoothAudioHal failure: {}", hidl_retval.description());
     return -EPROTO;

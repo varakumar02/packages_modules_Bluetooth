@@ -125,6 +125,13 @@ bool is_hal_offloading() {
   return aidl::a2dp::is_hal_offloading();
 }
 
+bool is_sharing_software_ready() {
+  if (use_qti()) {
+    return aidl_software_ready;
+  }
+  return true;
+}
+
 // Initialize BluetoothAudio HAL: openProvider
 bool init(bluetooth::common::MessageLoopThread* message_loop,
           bluetooth::audio::a2dp::StreamCallbacks const* stream_callbacks, bool offload_enabled) {

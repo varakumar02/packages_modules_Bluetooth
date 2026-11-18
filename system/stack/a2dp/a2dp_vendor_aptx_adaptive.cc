@@ -426,10 +426,11 @@ A2dpCodecConfigAptxAdaptive::A2dpCodecConfigAptxAdaptive(btav_a2dp_codec_priorit
 A2dpCodecConfigAptxAdaptive::~A2dpCodecConfigAptxAdaptive() {}
 
 bool A2dpCodecConfigAptxAdaptive::init() {
-  // There is no host encoder: the codec is usable only through A2DP offload
+  // There is no host encoder: the codec is usable only through A2DP offload via QTI provider
   if (!osi_property_get_bool("ro.bluetooth.a2dp_offload.supported", false) ||
-      osi_property_get_bool("persist.bluetooth.a2dp_offload.disabled", false)) {
-    log::info("aptX-adaptive needs A2DP offload, disabled");
+      osi_property_get_bool("persist.bluetooth.a2dp_offload.disabled", false) ||
+      !osi_property_get_bool("persist.bluetooth.a2dp_offload.qti_hal", true)) {
+    log::info("aptX-adaptive needs QTI A2DP offload, disabled");
     return false;
   }
   return true;

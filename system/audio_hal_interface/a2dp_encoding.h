@@ -78,6 +78,9 @@ bool is_hal_enabled();
 // Check if new bluetooth_audio is running with offloading encoders
 bool is_hal_offloading();
 
+// Check if software session is available for dual A2DP audio sharing
+bool is_sharing_software_ready();
+
 // Initialize BluetoothAudio HAL: openProvider
 bool init(bluetooth::common::MessageLoopThread* message_loop,
           StreamCallbacks const* strean_callbacks, bool offload_enabled);

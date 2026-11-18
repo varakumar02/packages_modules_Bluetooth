@@ -160,6 +160,23 @@ static void btif_a2dp_sharing_enter_main_thread(const RawAddress& bd_addr) {
     RawAddress primary = btif_av_source_active_peer();
     log::info("btif_a2dp_sharing_enter_main_thread: primary={}, secondary={}", primary, bd_addr);
 
+    if (bluetooth::audio::a2dp::is_hal_offloading() &&
+        !bluetooth::audio::a2dp::is_sharing_software_ready() &&
+        !btif_a2dp_sharing_offload_probe()) {
+        log::error("btif_a2dp_sharing: cannot enter sharing, software audio session unavailable");
+        btav_sharing_callbacks_t* callbacks = nullptr;
+        {
+            std::lock_guard<std::mutex> lock(s_sharing_mutex);
+            callbacks = s_callbacks;
+        }
+        if (callbacks && callbacks->on_sharing_state_changed) {
+            do_in_jni_thread(base::BindOnce(callbacks->on_sharing_state_changed,
+                                            A2DP_SHARING_STATE_STOPPED,
+                                            primary, bd_addr));
+        }
+        return;
+    }
+
     btav_sharing_callbacks_t* callbacks = nullptr;
     uint32_t generation = 0;
     {
@@ -242,10 +259,11 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
     RawAddress old_secondary = RawAddress::kEmpty;
     RawAddress primary = RawAddress::kEmpty;
     btav_sharing_callbacks_t* callbacks = nullptr;
+    uint32_t generation = 0;
 
     {
         std::lock_guard<std::mutex> lock(s_sharing_mutex);
-        ++s_sharing_generation; // Invalidate any in-flight enter continuation
+        generation = ++s_sharing_generation; // Invalidate any in-flight enter continuation
         callbacks = s_callbacks;
 
         if (!s_in_sharing_mode && s_secondary_address.IsEmpty()) {
@@ -272,23 +290,53 @@ static void btif_a2dp_sharing_exit_main_thread(const RawAddress& disconnected_pe
 
     // Upshift: Restart source session for surviving active device to restore Hardware Offload or uncap SBC bitpool
     RawAddress current_active = btif_av_source_active_peer();
+    std::promise<void> promise;
+    std::future<void> future = promise.get_future();
+    bool has_async_work = false;
     if (!current_active.IsEmpty()) {
-        std::promise<void> promise;
         if (btif_a2dp_sharing_offload_probe()) {
             log::info("btif_a2dp_sharing: offload probe, session left as it is");
         } else if (btif_av_is_a2dp_offload_enabled()) {
             log::info("btif_a2dp_sharing: restarting session for surviving active device {} to restore full capabilities",
                       current_active);
             btif_a2dp_source_restart_session(current_active, current_active, std::move(promise));
+            has_async_work = true;
         } else {
             log::info("btif_a2dp_sharing: re-initializing the encoder for surviving active device {}", current_active);
             btif_a2dp_source_reinit_encoder(current_active, std::move(promise));
+            has_async_work = true;
         }
     }
 
     // Back to the active sink's own delay
     btif_a2dp_sharing_update_hold();
     bluetooth::audio::a2dp::set_remote_delay(btif_av_get_audio_delay(A2dpType::kSource));
+
+    if (has_async_work) {
+        // Report STOPPED only once the surviving session is back (or after 1 s)
+        std::thread([future = std::move(future), primary, old_secondary, callbacks, generation]() mutable {
+            if (future.valid()) {
+                auto status = future.wait_for(std::chrono::milliseconds(1000));
+                if (status == std::future_status::timeout) {
+                    log::warn("btif_a2dp_sharing: exit restart_session future wait timed out after 1000ms");
+                }
+            }
+            do_in_main_thread(base::BindOnce([](uint32_t gen, RawAddress prim, RawAddress sec, btav_sharing_callbacks_t* cb) {
+                {
+                    std::lock_guard<std::mutex> lock(s_sharing_mutex);
+                    if (gen != s_sharing_generation) {
+                        log::warn("btif_a2dp_sharing: exit continuation discarded due to state transition generation mismatch (expected {}, current {})",
+                                  gen, s_sharing_generation);
+                        return;
+                    }
+                }
+                if (cb && cb->on_sharing_state_changed) {
+                    do_in_jni_thread(base::BindOnce(cb->on_sharing_state_changed, A2DP_SHARING_STATE_STOPPED, prim, sec));
+                }
+            }, generation, primary, old_secondary, callbacks));
+        }).detach();
+        return;
+    }
 
     // Invoke state callback on JNI thread without holding s_sharing_mutex
     if (callbacks && callbacks->on_sharing_state_changed) {
