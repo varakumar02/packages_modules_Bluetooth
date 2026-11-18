@@ -56,6 +56,11 @@ BluetoothAudioClientInterface::BluetoothAudioClientInterface(IBluetoothTransport
 BluetoothAudioClientInterface::~BluetoothAudioClientInterface() {
   // Binder delivery and queued recovery can outlive the client and its transport.
   weak_factory_.InvalidateWeakPtrs();
+  // The cookie is freed by the OnUnlinked callback.
+  if (provider_factory_ != nullptr && death_cookie_ != nullptr) {
+    AIBinder_unlinkToDeath(provider_factory_->asBinder().get(), death_recipient_.get(),
+                           death_cookie_);
+  }
 }
 
 bool BluetoothAudioClientInterface::IsValid() const { return provider_ != nullptr; }
@@ -211,13 +216,15 @@ void BluetoothAudioClientInterface::FetchAudioProvider() {
   log::assert_that(provider_factory_ != nullptr, "assert failed: provider_factory_ != nullptr");
   log::assert_that(provider_ != nullptr, "assert failed: provider_ != nullptr");
 
-  binder_status_t binder_status =
-          AIBinder_linkToDeath(provider_factory_->asBinder().get(), death_recipient_.get(),
-                              new base::WeakPtr<BluetoothAudioClientInterface>(
-                                      weak_factory_.GetWeakPtr()));
+  auto* cookie = new base::WeakPtr<BluetoothAudioClientInterface>(weak_factory_.GetWeakPtr());
+  binder_status_t binder_status = AIBinder_linkToDeath(provider_factory_->asBinder().get(),
+                                                       death_recipient_.get(), cookie);
   if (binder_status != STATUS_OK) {
     log::error("Failed to linkToDeath {}", static_cast<int>(binder_status));
+    delete cookie;
+    cookie = nullptr;
   }
+  death_cookie_ = cookie;
 
   log::info("IBluetoothAudioProvidersFactory::openProvider() returned {}{}",
             std::format_ptr(provider_.get()), (provider_->isRemote() ? " (remote)" : " (local)"));

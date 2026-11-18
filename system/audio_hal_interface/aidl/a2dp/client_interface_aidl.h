@@ -161,6 +161,8 @@ protected:
   size_t fmq_buffer_size_ = 0;
 
   ::ndk::ScopedAIBinder_DeathRecipient death_recipient_;
+  // Cookie of the current provider_factory_ death link, owned by the link.
+  base::WeakPtr<BluetoothAudioClientInterface>* death_cookie_ = nullptr;
   // static constexpr const char* kDefaultAudioProviderFactoryInterface =
   //     "android.hardware.bluetooth.audio.IBluetoothAudioProviderFactory/default";
   static inline const std::string kDefaultAudioProviderFactoryInterface =
